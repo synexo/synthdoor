@@ -24,7 +24,6 @@ const CFG = {
   PRICE_BASE_RATIONS:   5,
   PRICE_BASE_PARTS:     150,
   PRICE_BASE_DOC:       200,
-  SELL_RATE_PCT:        0.50,              // Sell items for 50% of the station's buy price
 
   // -- Movement & Consumption --
   PACE_FUEL_BURN:       [0, 8, 20, 45],    // Paces: 0=None, 1=Cruise, 2=Accel, 3=Max
@@ -230,7 +229,6 @@ class EuropaTrail extends GameBase {
       ]},
       { hdr: 'RESOURCE MANAGEMENT', col: C.BRIGHT_CYAN, text: [
         'CREDITS : The currency of the solar system. You will not earn more!',
-        '          However, you can barter and sell excess goods at stations.',
         'FUEL    : He-3 Isotopes. Used to fly the ship and maneuver during mining.',
         'RATIONS : Consumed every week. Prevents crew starvation and disease.',
         'PARTS   : Crucial for repairing Hull, Reactor, and Life Support.'
@@ -728,12 +726,6 @@ class EuropaTrail extends GameBase {
       doc:     Math.floor(CFG.PRICE_BASE_DOC * station.mult)
     };
 
-    const sellPrices = {
-      fuel:    Math.max(1, Math.floor(prices.fuel * CFG.SELL_RATE_PCT)),
-      rations: Math.max(1, Math.floor(prices.rations * CFG.SELL_RATE_PCT)),
-      parts:   Math.max(1, Math.floor(prices.parts * CFG.SELL_RATE_PCT))
-    };
-
     while (true) {
       t.clearScreen(); t.moveTo(1,1);
       this._sectionHeader(`MARKETPLACE: ${station.name}`, C.BRIGHT_YELLOW);
@@ -751,20 +743,20 @@ class EuropaTrail extends GameBase {
       t.println(`    Parts:   ${this.s.parts}`);
       t.println();
 
-      t.setColor(C.BRIGHT_YELLOW, C.BLACK); t.println('  ITEMS FOR TRADE:');
+      t.setColor(C.BRIGHT_YELLOW, C.BLACK); t.println('  ITEMS FOR SALE:');
       t.setColor(C.WHITE, C.BLACK);
-      t.println(`   [1] Buy Fuel      ($${prices.fuel})  |  [4] Sell Fuel      (+$${sellPrices.fuel})`);
-      t.println(`   [2] Buy Rations   ($${prices.rations})  |  [5] Sell Rations   (+$${sellPrices.rations})`);
-      t.println(`   [3] Buy Parts     ($${prices.parts})  |  [6] Sell Parts     (+$${sellPrices.parts})`);
-      t.println(`   [7] Doctor Visit  ($${prices.doc})`);
-      t.println(`   [8] Return to Ship`);
+      t.println(`   [1] Fuel Unit     ($${prices.fuel})`);
+      t.println(`   [2] Ration Pack   ($${prices.rations})`);
+      t.println(`   [3] Spare Part    ($${prices.parts})`);
+      t.println(`   [4] Doctor Visit  ($${prices.doc})`);
+      t.println(`   [5] Return to Ship`);
       t.println();
 
-      t.setColor(C.BRIGHT_CYAN, C.BLACK); t.write('  Choice (1-8): '); t.resetAttrs();
+      t.setColor(C.BRIGHT_CYAN, C.BLACK); t.write('  Choice (1-5): '); t.resetAttrs();
       const line = await t.readLine({maxLen:1});
       const choice = parseInt(line.trim());
       
-      if (choice === 8) {
+      if (choice === 5) {
         if (isInit) {
           const ok = await this._askYN('Are you sure you are ready to depart?', true);
           if (ok) break;
@@ -773,71 +765,38 @@ class EuropaTrail extends GameBase {
         }
       }
 
-      // --- BUYING ---
       if (choice >= 1 && choice <= 3) {
         let item = '', cost = 0;
         if (choice===1) { item = 'Fuel Unit'; cost = prices.fuel; }
         if (choice===2) { item = 'Ration Pack'; cost = prices.rations; }
         if (choice===3) { item = 'Spare Part'; cost = prices.parts; }
 
-        t.setColor(C.BRIGHT_CYAN, C.BLACK); t.write(`  How many ${item}s to BUY? `); t.resetAttrs();
+        t.setColor(C.BRIGHT_CYAN, C.BLACK); t.write(`  How many ${item}s to buy? `); t.resetAttrs();
         const qty = parseInt((await t.readLine({maxLen:4})).trim());
         if (isNaN(qty) || qty <= 0) continue;
 
         const total = qty * cost;
         if (total > this.s.credits) {
           this._notice('INSUFFICIENT CREDITS.', C.BRIGHT_RED);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
           await t.waitKey();
         } else {
           this.s.credits -= total;
           if (choice===1) this.s.fuel += qty;
           if (choice===2) this.s.rations += qty;
           if (choice===3) this.s.parts += qty;
-          this._notice(`Purchased ${qty} ${item}s for $${total}.`, C.BRIGHT_GREEN);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
+          this._notice(`Purchased ${qty} ${item}s.`, C.BRIGHT_GREEN);
           await t.waitKey();
         }
       }
 
-      // --- SELLING ---
-      if (choice >= 4 && choice <= 6) {
-        let item = '', yieldAmt = 0, currentQty = 0;
-        if (choice===4) { item = 'Fuel Unit'; yieldAmt = sellPrices.fuel; currentQty = this.s.fuel; }
-        if (choice===5) { item = 'Ration Pack'; yieldAmt = sellPrices.rations; currentQty = this.s.rations; }
-        if (choice===6) { item = 'Spare Part'; yieldAmt = sellPrices.parts; currentQty = this.s.parts; }
-
-        t.setColor(C.BRIGHT_CYAN, C.BLACK); t.write(`  How many ${item}s to SELL? (Max: ${currentQty}): `); t.resetAttrs();
-        const qty = parseInt((await t.readLine({maxLen:4})).trim());
-        if (isNaN(qty) || qty <= 0) continue;
-
-        if (qty > currentQty) {
-          this._notice('INSUFFICIENT INVENTORY.', C.BRIGHT_RED);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
-          await t.waitKey();
-        } else {
-          const total = qty * yieldAmt;
-          this.s.credits += total;
-          if (choice===4) this.s.fuel -= qty;
-          if (choice===5) this.s.rations -= qty;
-          if (choice===6) this.s.parts -= qty;
-          this._notice(`Sold ${qty} ${item}s for $${total}.`, C.BRIGHT_GREEN);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
-          await t.waitKey();
-        }
-      }
-
-      // --- DOCTOR ---
-      if (choice === 7) {
+      if (choice === 4) {
         if (this.s.credits < prices.doc) {
           this._notice('INSUFFICIENT CREDITS FOR MEDICAL BAY.', C.BRIGHT_RED);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
           await t.waitKey();
         } else {
           this.s.credits -= prices.doc;
           this.s.crew.forEach(c => { if (c.alive) c.health = 4; });
           this._notice('All living crew members treated and restored to Optimal health.', C.BRIGHT_GREEN);
-          t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
           await t.waitKey();
         }
       }

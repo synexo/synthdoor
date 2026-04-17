@@ -29,3 +29,6 @@ logs/
 dist/
 build/
 coverage/
+
+# batch files
+*.bat

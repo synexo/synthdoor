@@ -41,6 +41,7 @@
  *     title_bg:    Color constant name
  *   selections: []                    Array of selection objects.
  *     - key:    string                Key the user presses ('1', 'a', 'x'…).
+ *                                     Must be exactly a single character.
  *       text:   string                Display label.
  *       type:   game | menu | action
  *       target: string                GAME_NAME, yaml basename, or action id.
@@ -208,8 +209,18 @@ class MenuLoader {
       'selections:',
     ];
 
+    // Auto-generate keys sequence: 1-9, then A-Z (skipping Q and X)
+    const AUTO_KEYS = '123456789ABCDEFGHIJKLMNOPRSTUVWYZ';
+
     games.forEach((g, i) => {
-      lines.push(`  - key: "${i + 1}"`);
+      let keyChar;
+      if (i < AUTO_KEYS.length) {
+        keyChar = AUTO_KEYS[i];
+      } else {
+        console.log("Exceeded available keys for menu autogeneration, only the first 33 games populated."); 
+      }
+
+      lines.push(`  - key: "${keyChar}"`);
       // Escape any double-quotes in the title
       const safeTitle = (g.title || g.name).replace(/"/g, '\\"');
       lines.push(`    text: "${safeTitle}"`);
@@ -218,7 +229,7 @@ class MenuLoader {
     });
 
     // Always append a quit entry
-    lines.push(`  - key: "q"`);
+    lines.push(`  - key: "Q"`);
     lines.push(`    text: "Goodbye"`);
     lines.push(`    type: action`);
     lines.push(`    target: exit`);
@@ -335,6 +346,7 @@ class MenuLoader {
     const type = String(raw.type ?? '').trim().toLowerCase();
 
     if (!key)  throw new Error(`${loc}: missing required field "key"`);
+    if (key.length !== 1) throw new Error(`${loc}: key must be exactly a single character`);
     if (!text) throw new Error(`${loc}: missing required field "text"`);
     if (!VALID_TYPES.has(type)) {
       throw new Error(`${loc}: invalid type "${type}" — must be game, menu, or action`);

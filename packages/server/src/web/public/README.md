@@ -244,10 +244,62 @@ The `_prevCursorCol/Row` fields track where the cursor was drawn last frame. At 
 **`VGA_FONT_8x16` (Uint8Array, 4096 bytes):**
 The IBM VGA BIOS ROM font, encoded as 256 glyphs × 16 bytes. Each byte is one row of 8 pixels; bit 7 is the leftmost pixel. This is the public-domain transcription of the actual PC BIOS font. All 256 CP437 code points are represented, including the full set of box-drawing and block-graphics characters.
 
-The double-line box characters (╔ ╗ ╚ ╝ ╠ ╣ ╦ ╩ ╬ and the nine mixed single/double junctions) have their horizontal tracks at pixel rows 5 and 7, and their vertical tracks at pixel columns 2–3 and 5–6 (`0x36` bitmask), matching the `═` and `║` straight-line characters exactly.
-
 **`buildFontSheet(CHAR_W, CHAR_H)` → `OffscreenCanvas`:**
 Renders all 256 glyphs side by side onto a single `OffscreenCanvas` (`256 × 8 = 2048` px wide, `16` px tall) using `putImageData` for pixel-exact placement. Each lit pixel is written as `RGBA(255, 255, 255, 255)`; dark pixels remain `(0, 0, 0, 0)` (fully transparent). This white-on-transparent sheet is the input to `renderer.js`'s tinting pipeline. It is built once during `renderer.init()` and never redrawn.
+
+### 1. The Historical Problem: 8-dot vs. 9-dot VGA hardware
+The original IBM VGA text mode resolution was 720x400, resulting in a character cell that was **9 pixels wide** by 16 pixels high. However, to save ROM space, the actual font stored in the BIOS was only **8 pixels wide**. 
+
+To fill that missing 9th pixel column, the VGA hardware would normally just pad a blank column. But for characters in the `0xC0` to `0xDF` range (the box-drawing characters), the hardware intercepted the signal and **duplicated the 8th pixel column into the 9th column**.
+
+Because the original font was designed knowing it would be stretched to 9 pixels, the lines inside the 8x16 ROM are completely asymmetrical. When modern canvases or emulators render this font purely as an 8x16 image without that 9th-pixel hardware stretch, the center points don't line up, lines look uneven, and corners miss each other by exactly 1 pixel.
+
+### 2. Strategy Phase 1: Establishing Perfect Symmetry
+In an 8-pixel wide grid, **there is no true center pixel** (columns are 0 through 7, so the exact center is the line between column 3 and 4). 
+
+If you draw a 1-pixel wide line in column 3, it's slightly to the left. If you draw it in column 4, it's slightly to the right. Therefore, to make perfectly intersecting geometric lines, **single lines must be exactly 2 pixels wide**.
+
+I mapped the entire box-drawing system to these strict boundaries:
+
+**Vertical Placement (X-axis):**
+*   **Single Vertical (`0x18`):** `0001 1000` (Columns 3 & 4)
+*   **Double Vertical (`0x66`):** `0110 0110` (Cols 1,2 and Cols 5,6. The gap is exactly Cols 3,4).
+
+**Horizontal Placement (Y-axis):**
+*   **Single Horizontal:** Rows 7 & 8 (The exact middle of 0-15)
+*   **Double Horizontal:** Rows 5,6 (Top) and Rows 9,10 (Bottom). The gap is exactly Rows 7,8.
+
+*Notice the magic here:* The 2-pixel single line fits **exactly** inside the 2-pixel gap of the double line. 
+
+### 3. Strategy Phase 2: Fixing the "Bleeding" Corners
+In standard fonts, if you just draw a horizontal line and a vertical line until they hit the center, they overlap. On single lines, this is fine. On double lines, this results in the lines "spiking" into the hollow interior of the corner.
+
+To fix the double corners, I applied a strict **Bounding Box Rule**: A line must completely stop at the outer boundary of its perpendicular neighbor.
+*   If a double vertical line hits a top corner, it stops exactly at Row 6. 
+*   If a double horizontal line hits that same corner, it stops exactly at Col 2.
+*   The corner itself is left completely empty (`0x00`), resulting in a perfect, continuous hollow square joint.
+
+### 4. Strategy Phase 3: The Masking Rule for Intersections
+This was the final piece of the puzzle (and what caused the bug in the previous iteration). 
+
+When a **Single Line** intersects a **Double Line** (e.g., `╫` or `╪`), who "wins" the empty space in the middle of the intersection? If you just draw the single line all the way through, it places a solid block right in the middle of the double line's hollow core.
+
+The strategy here is **"Hollow Core Precedence."** To make it look like a physical pipe crossing another pipe, the double line's empty core must never be drawn over. I used bitwise masks to "punch out" the center of the single lines.
+
+**Example 1: Single Horizontal crossing Double Vertical (`╫` 0xD7)**
+*   The Double Vertical lines live at `0x66` (`01100110`), leaving cols 3 and 4 empty.
+*   The Single Horizontal line normally draws a solid `0xFF` (`11111111`) across rows 7 and 8.
+*   **The Fix:** I changed rows 7 and 8 from `0xFF` to `0xE7`.
+*   Binary `0xE7` is `1110 0111`. 
+*   By setting columns 3 and 4 to `0`, the horizontal line halts exactly at the double line's outer wall, leaving the vertical hollow gap perfectly unbroken.
+
+**Example 2: Single Vertical crossing Double Horizontal (`╪` 0xD8)**
+*   The Double Horizontal gaps live at rows 7 and 8.
+*   The Single Vertical normally writes `0x18` (`00011000`) all the way down the glyph.
+*   **The Fix:** On rows 7 and 8, instead of drawing the vertical line, I set the bytes to `0x00`. 
+*   This cuts a 2-pixel gap straight through the vertical line, allowing the horizontal double-line's hollow core to flow left-to-right entirely uninterrupted.
+
+By abandoning the original, distorted IBM bytes and completely recalculating the hex codes based on these strict X/Y alignments and intersection masks, the font now renders geometrically perfect UI boxes regardless of scaling or composition.
 
 ---
 

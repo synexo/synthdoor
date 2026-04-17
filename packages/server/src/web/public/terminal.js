@@ -336,6 +336,10 @@ export class Terminal {
     } else if (mode===1) {
       for(let r=0;r<cy;r++) for(let c=0;c<cols;c++) this._clr(c,r);
       for(let c=0;c<=cx;c++) this._clr(c,cy);
+    } else if (mode===3) {
+      // ESC[3J — erase saved lines (clear scrollback buffer).
+      // Sent by the server (screen.js) when entering FIXED mode.
+      this.clearScrollback();
     } else {
       for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) this._clr(c,r);
       if (mode===2) { this.cx=0; this.cy=0; }
@@ -455,6 +459,7 @@ export class Terminal {
   scrollbackHome()  { this._scrollOffset=this._scrollback.length; }
   scrollbackEnd()   { this._scrollOffset=0; }
   isLive()          { return this._scrollOffset===0; }
+  clearScrollback() { this._scrollback=[]; this._scrollOffset=0; }
 
   getDisplayCells() {
     if (this._scrollOffset===0) return this.screen.cells;

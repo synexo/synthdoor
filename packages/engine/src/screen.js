@@ -74,16 +74,17 @@ class Screen {
     this.mode = mode;
     const t = this.terminal;
     if (mode === Screen.FIXED) {
-      t.writeRaw('\x1b[0m');        
-      t.writeRaw('\x1b[2J');        
-      t.writeRaw('\x1b[H');         
-      t.writeRaw('\x1b[?25l');      
+      t.writeRaw('\x1b[0m'); // reset attributes
+      t.writeRaw('\x1b[2J'); // clear screen
+      t.writeRaw('\x1b[3J'); // clear scrollback buffer
+      t.writeRaw('\x1b[H'); // cursor home        
+      t.writeRaw('\x1b[?25l'); // hide cursor
       this._markAllDirty();
     } else {
-      t.writeRaw('\x1b[?25h');      
-      t.writeRaw('\x1b[0m');        
-      t.writeRaw('\x1b[24;1H');     
-      t.writeRaw('\x1b[J');         
+      t.writeRaw('\x1b[?25h'); // show cursor
+      t.writeRaw('\x1b[0m'); // reset attributes
+      t.writeRaw('\x1b[24;1H'); // cursor position Row 24, Column 1
+      t.writeRaw('\x1b[J'); // erase down         
     }
     return this;
   }

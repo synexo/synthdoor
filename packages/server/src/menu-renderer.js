@@ -333,7 +333,8 @@ class MenuRenderer {
       const bg = isSelected ? selectedBg : normalBg;
 
       // Build label: "1. Text" padded to labelWidth
-      const keyPart  = `${sel.key}.`;
+      // Force key to uppercase for display rendering
+      const keyPart  = `${sel.key.toUpperCase()}.`;
       const textPart = ` ${sel.text}`;
       const full     = (keyPart + textPart).substring(0, labelWidth);
       const padded   = full.padEnd(labelWidth);
