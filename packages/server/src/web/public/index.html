@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SynthDoor Terminal</title>
+<link rel="stylesheet" href="style.css">
+
+<!-- ════════════════════════════════════════════════════════════════
+     CONFIGURATION — edit these values to customise the terminal.
+     All options are read by app.js via window.SYNTHDOOR_CONFIG.
+     ════════════════════════════════════════════════════════════════ -->
+<script>
+window.SYNTHDOOR_CONFIG = {
+
+  // ── Identity ────────────────────────────────────────────────────
+  // Display name shown in the title bar.
+  NAME: 'SYNTHDOOR',
+
+  // ── Connection ──────────────────────────────────────────────────
+  // WebSocket URL to connect to.
+  // 'auto' uses the same host/port the page was served from
+  // (ws://hostname:port), which works when websocket.js serves
+  // the HTML itself.  Replace with a literal string like
+  // 'ws://192.168.1.10:8080' to hard-code a target.
+  WSURL: 'auto',
+
+  // When true, connect immediately on page load without showing the
+  // connection dialog.  The dialog is never shown.
+  // When false, show the dialog on load so the user can confirm/change
+  // the URL and terminal size before connecting.
+  // Clicking the CONNECT button always honours this flag:
+  //   true  → reconnect immediately (no dialog)
+  //   false → show dialog first
+  AUTOCONNECT: true,
+
+  // ── Terminal dimensions ─────────────────────────────────────────
+  // Default terminal size (cols x rows).
+  // Common values: '80x25' (classic), '80x50' (tall), '132x37' (wide).
+  TERMSIZE: '80x25',
+
+  // ── Scrollback ──────────────────────────────────────────────────
+  // Number of lines to keep in the scrollback buffer.
+  SCROLLBACK: 5000,
+
+  // ── iCE colours ─────────────────────────────────────────────────
+  // iCE mode: when true, all 16 colours can be used as backgrounds
+  // (the blink attribute is repurposed for bright backgrounds).
+  // When false (default), background colours are limited to 0-7 and
+  // the blink attribute makes text flash.
+  ICECOLORS: false,
+
+  // Show the iCE toggle button in the title bar.
+  // If false the button is hidden and ICECOLORS above is fixed.
+  SHOWICEBTN: false,
+
+  // ── Canvas scaling ──────────────────────────────────────────────
+  // How the terminal canvas is scaled to fill the browser window.
+  //
+  // 'integer'    — scale by the largest whole number that fits
+  //                (e.g. 1×, 2×, 3×).  Perfectly crisp but may leave
+  //                large letterbox bars at non-standard window sizes.
+  //
+  // 'integerish' — like 'integer' but allows one extra half-step
+  //                (1.5×, 2.5×, …) when it gains significant space
+  //                without significant blurring.  Good balance.
+  //
+  // 'any'        — scale to exactly fill the available space while
+  //                maintaining aspect ratio.  No letterboxing, but
+  //                sub-pixel scaling may slightly blur the font.
+  //
+  // 'fit'        — fill *both* axes independently (stretch to fill,
+  //                ignoring aspect ratio).  Rarely looks good on a
+  //                terminal but useful for fixed-size embedded views.
+  //
+  SCALING: 'any',
+
+  // Maximum scale multiplier applied on top of the SCALING mode.
+  // Prevents the font from becoming enormous on high-DPI screens or
+  // large monitors.  Typical values: 2, 3, 4.  Set to Infinity
+  // to remove the cap entirely.
+  SCALINGCAP: 3,
+
+  // ── Canvas image rendering ──────────────────────────────────────
+  // CSS image-rendering applied to the <canvas> element.
+  // Controls how the browser scales the canvas pixels up to screen pixels.
+  //
+  // 'pixelated'      — nearest-neighbour (hard pixel edges, no blur).
+  //                    Best for integer and integerish scaling.
+  // 'crisp-edges'    — similar to pixelated; some browsers differ slightly.
+  // 'auto'           — browser default (usually bilinear interpolation).
+  //                    Smoother but blurrier at non-integer scales.
+  // '-webkit-optimize-contrast' — legacy Safari alias for crisp-edges.
+  //
+  IMAGERENDERING: 'pixelated',
+
+};
+</script>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── Title bar ─────────────────────────────────────────────── -->
+  <div id="titlebar">
+    <span class="logo" id="title-name">SYNTHDOOR</span>
+    <span class="sep">|</span>
+    <div id="conn-status">
+      <div id="conn-dot"></div>
+      <span id="conn-label">DISCONNECTED</span>
+    </div>
+    <span class="sep">|</span>
+    <span id="server-label">—</span>
+    <div class="spacer"></div>
+    <button id="btn-scale">SCALE: CLOSE</button>
+    <button id="btn-render">RENDER: PIXEL</button>
+    <button id="btn-connect">CONNECT</button>
+    <button id="btn-disconnect" style="display:none">DISCONNECT</button>
+    <button id="btn-ice" style="display:none">iCE: BLINK</button>
+    <button id="btn-music">♪ MUSIC: ON</button>
+  </div>
+
+  <!-- ── Terminal area: canvas + scrollbar ─────────────────────── -->
+  <div id="terminal-area">
+
+    <div id="canvas-wrap">
+      <canvas id="terminal-canvas"></canvas>
+      <div id="scrollback-indicator"></div>
+    </div>
+
+    <div id="scrollbar">
+      <div id="scrollbar-thumb"></div>
+    </div>
+
+  </div>
+
+  <!-- ── Mobile key toolbar ────────────────────────────────────── -->
+  <div id="mobile-toolbar">
+    <button class="mkey accent" data-key="ESC">ESC</button>
+    <button class="mkey accent" data-key="TAB">TAB</button>
+    <button class="mkey accent" data-key="CTRL">CTRL</button>
+    <span class="sep-v"></span>
+    <button class="mkey" data-key="UP">▲</button>
+    <button class="mkey" data-key="DOWN">▼</button>
+    <button class="mkey" data-key="LEFT">◄</button>
+    <button class="mkey" data-key="RIGHT">►</button>
+    <span class="sep-v"></span>
+    <button class="mkey" data-key="PGUP">PgUp</button>
+    <button class="mkey" data-key="PGDN">PgDn</button>
+    <button class="mkey" data-key="HOME">Home</button>
+    <button class="mkey" data-key="END">End</button>
+    <button class="mkey" data-key="DEL">Del</button>
+    <button class="mkey" data-key="INS">Ins</button>
+    <span class="sep-v"></span>
+    <button class="mkey" data-key="F1">F1</button>
+    <button class="mkey" data-key="F2">F2</button>
+    <button class="mkey" data-key="F3">F3</button>
+    <button class="mkey" data-key="F4">F4</button>
+    <button class="mkey" data-key="F5">F5</button>
+    <button class="mkey" data-key="F10">F10</button>
+  </div>
+
+</div><!-- #app -->
+
+<!-- Hidden input: summons the mobile virtual keyboard -->
+<input id="hidden-input" type="text"
+       autocomplete="off" autocorrect="off" autocapitalize="off"
+       spellcheck="false" aria-hidden="true">
+
+<!-- ── Connection modal (shown only when AUTOCONNECT=false) ───── -->
+<div id="conn-modal" class="hidden">
+  <div class="modal-box">
+    <h2 id="modal-title">CONNECT TO SERVER</h2>
+
+    <div class="field">
+      <label for="ws-url">WEBSOCKET URL</label>
+      <input id="ws-url" type="text" placeholder="ws://host:port" spellcheck="false">
+    </div>
+
+    <div class="field">
+      <label for="term-size">TERMINAL SIZE</label>
+      <select id="term-size">
+        <option value="80x25">80 × 25  (standard)</option>
+        <option value="80x50">80 × 50  (tall)</option>
+        <option value="132x37">132 × 37  (wide)</option>
+      </select>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-primary" id="modal-connect">CONNECT</button>
+      <button class="btn-secondary" id="modal-cancel">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import { App } from './app.js';
+  window._app = new App();
+</script>
+
+</body>
+</html>

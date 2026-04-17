@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-triangulum",
+  "version": "1.0.0",
+  "description": "Triangulum - A Galaga clone for SynthDoor BBS",
+  "main": "src/index.js",
+  "license": "AGPL-3.0"
+}

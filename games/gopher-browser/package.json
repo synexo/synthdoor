@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/gopher=browser",
+  "version": "1.0.0",
+  "description": "A gopher browser for Synthdoor.",
+  "main": "src/index.js",
+  "license": "MIT"
+}

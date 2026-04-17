@@ -1,0 +1,31 @@
+# All dependencies - run npm install to restore
+node_modules/
+
+# Secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+
+# Database and runtime data
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment and logs
+.DS_Store
+Thumbs.db
+*.log
+logs/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build output
+dist/
+build/
+coverage/

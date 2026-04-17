@@ -1,0 +1,32 @@
+{
+  "name": "synthdoor",
+  "version": "1.0.0",
+  "description": "A modern BBS door game engine and framework for Node.js",
+  "private": true,
+  "scripts": {
+    "setup": "node setup.js",
+    "start": "node packages/server/src/index.js",
+    "start:server": "node packages/server/src/index.js",
+    "start:web": "node packages/server/src/web-auth-server.js",
+    "generate-secrets": "node -e \"const c=require('crypto'); console.log('PEPPER='+c.randomBytes(32).toString('hex')); console.log('SYNTH_SALT='+c.randomBytes(32).toString('hex'));\"",
+    "test:tetris": "node test-game.js tetris",
+    "test:horoscope": "node test-game.js daily-horoscope",
+    "test:list": "node test-game.js --list",
+    "game": "node test-game.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "argon2": "^0.44.0",
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.4.0",
+    "express": "^4.18.2",
+    "express-session": "^1.18.0",
+    "fast-levenshtein": "^3.0.0",
+    "js-yaml": "^4.1.1",
+    "node-fetch": "^3.3.2",
+    "ws": "^8.16.0"
+  }
+}

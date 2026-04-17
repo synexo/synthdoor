@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-meteoroid",
+  "version": "1.0.0",
+  "description": "Meteoroid — Space Shooter for SynthDoor",
+  "main": "src/index.js",
+  "license": "MIT"
+}

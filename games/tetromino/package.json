@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-tetromino",
+  "version": "1.0.0",
+  "description": "SynthDoor Tetromino full-screen ANSI game with high scores",
+  "main": "src/index.js",
+  "license": "MIT"
+}

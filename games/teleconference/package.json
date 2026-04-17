@@ -1,0 +1,8 @@
+{
+  "name": "@synthdoor/game-teleconference",
+  "version": "1.0.0",
+  "description": "A classic BBS-style multiuser teleconference chat room.",
+  "main": "src/index.js",
+  "author": "SynthDoor Developer",
+  "license": "MIT"
+}

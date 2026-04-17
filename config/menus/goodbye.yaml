@@ -1,0 +1,15 @@
+# goodbye.yaml — Goodbye screen configuration
+# Shown when a user selects exit/goodbye from any menu.
+#
+# Option 1 (default): remove or comment out ansifile to use the built-in
+# goodbye screen (a simple box drawn with CP437 characters).
+#
+# Option 2: specify an ANSI art file to show custom goodbye art.
+# The art is rendered into rows 2-24 (between title and status bars).
+#   ansifile: "art/goodbye.ans"
+#
+# The title and statusbar fields work the same as in any menu definition.
+
+title: "GOODBYE"
+statusbar: " Thank you for visiting SynthDoor BBS!"
+ansifile: "goodbye.ans"

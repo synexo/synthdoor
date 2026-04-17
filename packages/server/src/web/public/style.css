@@ -1,0 +1,313 @@
+/* style.css — SynthDoor Terminal */
+
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Share+Tech&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #080810;
+  --chrome:    #10101a;
+  --border:    #252535;
+  --accent:    #00ff88;
+  --accent2:   #00ccff;
+  --dim:       #2a2a40;
+  --text:      #c0c0d0;
+  --text-dim:  #606070;
+  --sb-w:      12px;   /* scrollbar width */
+  --font-ui:   'Share Tech', monospace, sans-serif;
+  --font-mono: 'Share Tech Mono', monospace;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: none;
+}
+
+/* ── App shell ─────────────────────────────────────────────────── */
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Title bar ─────────────────────────────────────────────────── */
+#titlebar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  z-index: 10;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#titlebar .logo {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  flex-shrink: 0;
+}
+#titlebar .sep { color: var(--dim); flex-shrink: 0; }
+.spacer { flex: 1; }
+
+#conn-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+#conn-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+#conn-dot.connected    { background: var(--accent);  box-shadow: 0 0 5px var(--accent); }
+#conn-dot.connecting   { background: #ffaa00;        box-shadow: 0 0 4px #ffaa00; }
+#conn-dot.error        { background: #ff3344;        box-shadow: 0 0 4px #ff3344; }
+#conn-dot.disconnected { background: var(--text-dim); box-shadow: none; }
+
+#server-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+#titlebar button {
+  background: none;
+  border: 1px solid var(--dim);
+  color: var(--text);
+  padding: 3px 9px;
+  font: 10px var(--font-ui);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#titlebar button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Terminal area (canvas + scrollbar side-by-side) ───────────── */
+#terminal-area {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  background: #000;
+  overflow: hidden;
+}
+
+/* ── Canvas wrap (centred inside terminal-area) ────────────────── */
+#canvas-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  min-width: 0;
+}
+
+#terminal-canvas {
+  display: block;
+  /* image-rendering is set dynamically by app.js from IMAGERENDERING config */
+  cursor: text;
+}
+
+/* ── Scrollback indicator (floating label) ─────────────────────── */
+#scrollback-indicator {
+  position: absolute;
+  top: 8px;
+  right: 18px;   /* inset from scrollbar edge */
+  background: rgba(0,0,0,0.78);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s;
+  white-space: nowrap;
+}
+#scrollback-indicator.visible { opacity: 1; }
+
+/* ── Scrollbar ─────────────────────────────────────────────────── */
+#scrollbar {
+  flex-shrink: 0;
+  width: var(--sb-w);
+  background: #0c0c16;
+  border-left: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  /* Hidden by default, becomes opaque when active class is set by JS */
+  opacity: 0.25;
+  transition: opacity 0.2s;
+}
+#scrollbar.active { opacity: 1; }
+#scrollbar:hover  { opacity: 1; }
+
+#scrollbar-thumb {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  min-height: 24px;
+  background: var(--text-dim);
+  border-radius: 3px;
+  cursor: grab;
+  transition: background 0.15s;
+}
+#scrollbar-thumb:hover  { background: var(--accent2); }
+#scrollbar-thumb:active { background: var(--accent); cursor: grabbing; }
+
+/* ── Mobile toolbar ────────────────────────────────────────────── */
+#mobile-toolbar {
+  flex-shrink: 0;
+  display: none;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+  background: var(--chrome);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+#mobile-toolbar::-webkit-scrollbar { display: none; }
+
+@media (max-width: 900px), (pointer: coarse) {
+  #mobile-toolbar { display: flex; }
+}
+
+.mkey {
+  flex-shrink: 0;
+  background: var(--dim);
+  border: 1px solid #333348;
+  color: var(--text);
+  font: 11px var(--font-mono);
+  padding: 5px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+.mkey:active { background: #404060; }
+.mkey.accent { border-color: var(--accent2); color: var(--accent2); }
+
+.sep-v {
+  display: inline-block;
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+/* ── Hidden input (mobile keyboard trick) ──────────────────────── */
+#hidden-input {
+  position: fixed;
+  top: -9999px; left: -9999px;
+  width: 1px; height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Connection modal ──────────────────────────────────────────── */
+#conn-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(2px);
+}
+#conn-modal.hidden { display: none; }
+
+.modal-box {
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  padding: 28px 32px;
+  width: min(440px, 92vw);
+  border-radius: 4px;
+}
+.modal-box h2 {
+  font: 600 13px var(--font-ui);
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  margin-bottom: 20px;
+}
+.field { margin-bottom: 14px; }
+.field label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+.field input,
+.field select {
+  width: 100%;
+  background: #08080f;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font: 13px var(--font-mono);
+  padding: 7px 10px;
+  border-radius: 2px;
+  outline: none;
+  transition: border-color 0.2s;
+  -webkit-appearance: none;
+}
+.field input:focus,
+.field select:focus { border-color: var(--accent); }
+.field select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23606070'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+.modal-actions { display: flex; gap: 10px; margin-top: 22px; }
+.btn-primary {
+  flex: 1;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  font: 600 11px var(--font-ui);
+  letter-spacing: 0.12em;
+  padding: 9px 16px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.btn-primary:hover { background: #00ffaa; }
+.btn-secondary {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font: 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  padding: 9px 16px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-secondary:hover { border-color: var(--accent2); color: var(--accent2); }

@@ -1,0 +1,813 @@
+/**
+ * draw.js
+ * High-level drawing primitives built on top of Screen.
+ * This is where games go to draw boxes, panels, title screens,
+ * progress bars, menus, status bars, gradients, and ANSI art.
+ *
+ * All methods operate on a Screen instance in FIXED mode unless noted.
+ *
+ * Examples:
+ *   Draw.box(screen, 1, 1, 80, 25, Draw.BOX_DOUBLE, Color.CYAN, Color.BLACK);
+ *   Draw.titleBar(screen, 'SYNTHDOOR v1.0', Color.BRIGHT_WHITE, Color.BLUE);
+ *   Draw.menu(screen, 10, 8, items, selectedIndex, Color.YELLOW, Color.BLUE);
+ *   Draw.progressBar(screen, 10, 20, 40, value, max, Color.GREEN, Color.BLACK);
+ *   Draw.ansiArt(screen, 1, 1, ansiString);
+ */
+
+'use strict';
+
+const { Color, Attr, CP437 } = require('./constants');
+
+// ─── Box style presets ────────────────────────────────────────────────────
+const BOX_SINGLE = {
+  H: CP437.BOX_H, V: CP437.BOX_V,
+  TL: CP437.BOX_TL, TR: CP437.BOX_TR,
+  BL: CP437.BOX_BL, BR: CP437.BOX_BR,
+  T: CP437.BOX_T, B: CP437.BOX_B,
+  L: CP437.BOX_L, R: CP437.BOX_R,
+};
+
+const BOX_DOUBLE = {
+  H: CP437.BOX2_H, V: CP437.BOX2_V,
+  TL: CP437.BOX2_TL, TR: CP437.BOX2_TR,
+  BL: CP437.BOX2_BL, BR: CP437.BOX2_BR,
+  T: CP437.BOX2_T, B: CP437.BOX2_B,
+  L: CP437.BOX2_L, R: CP437.BOX2_R,
+};
+
+const BOX_BLOCK = {
+  H: CP437.FULL_BLOCK, V: CP437.FULL_BLOCK,
+  TL: CP437.FULL_BLOCK, TR: CP437.FULL_BLOCK,
+  BL: CP437.FULL_BLOCK, BR: CP437.FULL_BLOCK,
+  T: CP437.FULL_BLOCK, B: CP437.FULL_BLOCK,
+  L: CP437.FULL_BLOCK, R: CP437.FULL_BLOCK,
+};
+
+const Draw = {
+  BOX_SINGLE,
+  BOX_DOUBLE,
+  BOX_BLOCK,
+
+  // ─── Boxes & Panels ────────────────────────────────────────────────────
+  /**
+   * Draw a box on the screen.
+   * @param {Screen}  s       - Screen instance
+   * @param {number}  col     - left column (1-based)
+   * @param {number}  row     - top row (1-based)
+   * @param {number}  width   - total width including borders
+   * @param {number}  height  - total height including borders
+   * @param {object}  style   - BOX_SINGLE | BOX_DOUBLE | BOX_BLOCK
+   * @param {number}  fg      - foreground color
+   * @param {number}  bg      - background color
+   * @param {boolean} fill    - fill interior with spaces
+   */
+  box(s, col, row, width, height, style = BOX_DOUBLE, fg = Color.WHITE, bg = Color.BLACK, fill = true) {
+    // Fill interior
+    if (fill) {
+      s.fill(col + 1, row + 1, width - 2, height - 2, ' ', fg, bg);
+    }
+
+    // Top and bottom edges
+    for (let c = col + 1; c < col + width - 1; c++) {
+      s.putChar(c, row,            style.H, fg, bg);
+      s.putChar(c, row + height - 1, style.H, fg, bg);
+    }
+
+    // Left and right edges
+    for (let r = row + 1; r < row + height - 1; r++) {
+      s.putChar(col,           r, style.V, fg, bg);
+      s.putChar(col + width - 1, r, style.V, fg, bg);
+    }
+
+    // Corners
+    s.putChar(col,           row,            style.TL, fg, bg);
+    s.putChar(col + width - 1, row,            style.TR, fg, bg);
+    s.putChar(col,           row + height - 1, style.BL, fg, bg);
+    s.putChar(col + width - 1, row + height - 1, style.BR, fg, bg);
+
+    return Draw;
+  },
+
+  /**
+   * Draw a titled box with a label centered in the top border.
+   */
+  titledBox(s, col, row, width, height, title, style = BOX_DOUBLE,
+            borderFg = Color.CYAN, borderBg = Color.BLACK,
+            titleFg = Color.BRIGHT_WHITE, titleBg = Color.BLACK) {
+    Draw.box(s, col, row, width, height, style, borderFg, borderBg);
+
+    // Center title in top border
+    if (title) {
+      const label = ` ${title} `;
+      const startCol = col + Math.floor((width - label.length) / 2);
+      s.putString(startCol, row, label, titleFg, titleBg);
+    }
+    return Draw;
+  },
+
+  // ─── Title & Status Bars ───────────────────────────────────────────────
+  /** Fill row 1 with a full-width title bar */
+  titleBar(s, text, fg = Color.BRIGHT_WHITE, bg = Color.BLUE) {
+    s.fill(1, 1, 80, 1, ' ', fg, bg);
+    const startCol = Math.floor((80 - text.length) / 2) + 1;
+    s.putString(startCol, 1, text, fg, bg);
+    return Draw;
+  },
+
+  /**
+   * Write the status bar on row 25 (the protected status line).
+   * Uses Screen.statusBar() which safely avoids col 80 row 25.
+   */
+  statusBar(s, text, fg = Color.BLACK, bg = Color.CYAN) {
+    s.statusBar(' ' + text, fg, bg);
+    return Draw;
+  },
+
+  // ─── Menus ─────────────────────────────────────────────────────────────
+  /**
+   * Draw a vertical menu list inside a box.
+   * @param {Screen}   s
+   * @param {number}   col, row  - top-left of menu box
+   * @param {string[]} items     - array of menu item labels
+   * @param {number}   selected  - index of highlighted item
+   * @param {string}   [title]   - optional box title
+   * @param {object}   [colors]  - { normal, highlight, border, bg }
+   */
+  menu(s, col, row, items, selected = 0, title = null, colors = {}) {
+    const width    = Math.max(24, ...items.map(i => i.length + 4));
+    const height   = items.length + 2;
+    const fg       = colors.border     || Color.CYAN;
+    const bg       = colors.bg         || Color.BLACK;
+    const normFg   = colors.normal     || Color.WHITE;
+    const hlFg     = colors.highlight  || Color.BLACK;
+    const hlBg     = colors.highlightBg|| Color.CYAN;
+
+    Draw.titledBox(s, col, row, width, height, title, BOX_SINGLE, fg, bg);
+
+    items.forEach((item, i) => {
+      const itemRow = row + 1 + i;
+      const isSelected = i === selected;
+      const label = ` ${item}`.padEnd(width - 2);
+      if (isSelected) {
+        s.fill(col + 1, itemRow, width - 2, 1, ' ', hlFg, hlBg);
+        s.putString(col + 1, itemRow, label, hlFg, hlBg);
+      } else {
+        s.putString(col + 1, itemRow, label, normFg, bg);
+      }
+    });
+    return Draw;
+  },
+
+  // ─── Progress Bar ─────────────────────────────────────────────────────
+  /**
+   * Draw a horizontal progress bar.
+   * @param {Screen} s
+   * @param {number} col, row  - left start position
+   * @param {number} width     - total bar width including brackets
+   * @param {number} value     - current value
+   * @param {number} max       - maximum value
+   * @param {number} fillFg    - filled portion foreground
+   * @param {number} bg        - background color
+   * @param {string} label     - optional label before bar
+   */
+  progressBar(s, col, row, width, value, max, fillFg = Color.GREEN, bg = Color.BLACK, label = '') {
+    const barWidth  = width - 2 - label.length;
+    const filled    = Math.round((value / max) * barWidth);
+    const empty     = barWidth - filled;
+
+    let c = col;
+    if (label) {
+      s.putString(c, row, label, Color.WHITE, bg);
+      c += label.length;
+    }
+    s.putChar(c, row, '[', Color.WHITE, bg); c++;
+    s.fill(c, row, filled, 1, CP437.FULL_BLOCK, fillFg, fillFg);
+    c += filled;
+    s.fill(c, row, empty, 1, CP437.MEDIUM_SHADE, Color.DARK_GRAY, bg);
+    c += empty;
+    s.putChar(c, row, ']', Color.WHITE, bg);
+    return Draw;
+  },
+
+  // ─── Horizontal / Vertical Lines ────────────────────────────────────
+  hLine(s, col, row, width, style = BOX_SINGLE, fg = Color.WHITE, bg = Color.BLACK) {
+    for (let c = col; c < col + width; c++) {
+      s.putChar(c, row, style.H, fg, bg);
+    }
+    return Draw;
+  },
+
+  vLine(s, col, row, height, style = BOX_SINGLE, fg = Color.WHITE, bg = Color.BLACK) {
+    for (let r = row; r < row + height; r++) {
+      s.putChar(col, r, style.V, fg, bg);
+    }
+    return Draw;
+  },
+
+  // ─── Gradient fill ────────────────────────────────────────────────────
+  /**
+   * Fill a rectangle with a horizontal or vertical gradient using shade chars.
+   * @param {string} direction - 'h' or 'v'
+   */
+  gradientFill(s, col, row, width, height, fg, bg, direction = 'h') {
+    for (let r = row; r < row + height; r++) {
+      for (let c = col; c < col + width; c++) {
+        const t = direction === 'h'
+          ? (c - col) / (width  - 1)
+          : (r - row) / (height - 1);
+        const shade = CP437.shade(1 - t);
+        s.putChar(c, r, shade, fg, bg);
+      }
+    }
+    return Draw;
+  },
+
+  // ─── Shadow box (drop shadow effect) ─────────────────────────────────
+  /**
+   * Draw a box with a dark shadow offset one cell right+down.
+   */
+  shadowBox(s, col, row, width, height, title, style = BOX_DOUBLE,
+            borderFg = Color.WHITE, borderBg = Color.BLACK) {
+    // Shadow (clamped to game area rows 1-24)
+    const shadowRow = row + height;
+    if (shadowRow <= 24) {
+      s.fill(col + 1, shadowRow, width, 1, CP437.DARK_SHADE, Color.DARK_GRAY, Color.BLACK);
+    }
+    s.fill(col + width, row + 1, 1, height - 1, CP437.DARK_SHADE, Color.DARK_GRAY, Color.BLACK);
+    Draw.titledBox(s, col, row, width, height, title, style, borderFg, borderBg);
+    return Draw;
+  },
+
+  // ─── Text centering helper ─────────────────────────────────────────────
+  centerText(s, row, text, fg = Color.WHITE, bg = Color.BLACK, width = 80) {
+    const startCol = Math.floor((width - text.length) / 2) + 1;
+    s.putString(startCol, row, text, fg, bg);
+    return Draw;
+  },
+
+  // ─── Sprite renderer ──────────────────────────────────────────────────
+  /**
+   * Render a "sprite" defined as an array of strings (ASCII art lines).
+   * Each character in the strings maps to a cell. Spaces are transparent.
+   * The colorMap object maps characters to {fg, bg} pairs.
+   *
+   * Example:
+   *   const sprite = ['#@#', ' @ ', '#@#'];
+   *   const colors = { '#': {fg: Color.RED, bg: Color.BLACK}, '@': {fg: Color.WHITE, bg: Color.BLACK} };
+   *   Draw.sprite(screen, 10, 5, sprite, colors);
+   */
+  sprite(s, col, row, lines, colorMap = {}, transparent = ' ') {
+    lines.forEach((line, r) => {
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        if (ch === transparent) continue;
+        const clr = colorMap[ch] || { fg: Color.WHITE, bg: Color.BLACK };
+        s.putChar(col + c, row + r, ch, clr.fg, clr.bg);
+      }
+    });
+    return Draw;
+  },
+
+  // ─── ANSI art importer ────────────────────────────────────────────────
+  /**
+   * Render a raw ANSI escape string directly to the terminal (SCROLL mode).
+   * For FIXED mode, use Screen.putString with pre-parsed data.
+   * This is a passthrough for pre-made ANSI art files.
+   * @param {Terminal} terminal
+   * @param {string}   ansiStr  - raw ANSI escape sequence string
+   */
+  ansiArt(terminal, ansiStr) {
+    terminal.write(ansiStr);
+    return Draw;
+  },
+
+  // ─── Block-graphics splash helper ─────────────────────────────────────
+  /**
+   * Draw a thick banner using full-block characters.
+   * Useful for game titles, splash screens.
+   * @param {Screen} s
+   * @param {number} row      - starting row
+   * @param {string} text     - text to render (each char becomes a 3x3 block letter)
+   * @param {number} fg
+   * @param {number} bg
+   */
+  blockBanner(s, row, text, fg = Color.CYAN, bg = Color.BLACK, startX = 1) {
+    // Simple 3x5 block font (subset — extend as needed)
+const FONT = {
+  ' ': [
+    '░░░',
+    '░░░',
+    '░░░',
+    '░░░',
+    '░░░'
+  ],
+  '!': [
+    '░█░',
+    '░█░',
+    '░█░',
+    '░░░',
+    '░█░'
+  ],
+  '"': [
+    '█░█',
+    '█░█',
+    '░░░',
+    '░░░',
+    '░░░'
+  ],
+  '#': [
+    '▐░▌',
+    '███',
+    '▐░▌',
+    '███',
+    '▐░▌'
+  ],
+  '$': [
+    '▄█▄',
+    '▌█░',
+    '▀█▄',
+    '░█▐',
+    '▀█▀'
+  ],
+  '%': [
+    '█░█',
+    '░░█',
+    '░█░',
+    '█░░',
+    '█░█'
+  ],
+  '&': [
+    '░█░',
+    '█▌█',
+    '░█░',
+    '█▐█',
+    '░█▐'
+  ],
+  "'": [
+    '░█░',
+    '░█░',
+    '░░░',
+    '░░░',
+    '░░░'
+  ],
+  '(': [
+    '░█░',
+    '█░░',
+    '█░░',
+    '█░░',
+    '░█░'
+  ],
+  ')': [
+    '░█░',
+    '░░█',
+    '░░█',
+    '░░█',
+    '░█░'
+  ],
+  '*': [
+    '░░░',
+    '█░█',
+    '░█░',
+    '█░█',
+    '░░░'
+  ],
+  '+': [
+    '░░░',
+    '░█░',
+    '███',
+    '░█░',
+    '░░░'
+  ],
+  ',': [
+    '░░░',
+    '░░░',
+    '░░░',
+    '░█░',
+    '█░░'
+  ],
+  '-': [
+    '░░░',
+    '░░░',
+    '███',
+    '░░░',
+    '░░░'
+  ],
+  '.': [
+    '░░░',
+    '░░░',
+    '░░░',
+    '░░░',
+    '░█░'
+  ],
+  '/': [
+    '░░█',
+    '░░█',
+    '░█░',
+    '█░░',
+    '█░░'
+  ],
+  '0': [
+    '░█░',
+    '█░█',
+    '█░█',
+    '█░█',
+    '░█░'
+  ],
+  '1': [
+    '░█░',
+    '██░',
+    '░█░',
+    '░█░',
+    '███'
+  ],
+  '2': [
+    '██░',
+    '░░█',
+    '░█░',
+    '█░░',
+    '███'
+  ],
+  '3': [
+    '██░',
+    '░░█',
+    '██░',
+    '░░█',
+    '██░'
+  ],
+  '4': [
+    '█░█',
+    '█░█',
+    '███',
+    '░░█',
+    '░░█'
+  ],
+  '5': [
+    '███',
+    '█░░',
+    '██░',
+    '░░█',
+    '██░'
+  ],
+  '6': [
+    '░██',
+    '█░░',
+    '██░',
+    '█░█',
+    '░██'
+  ],
+  '7': [
+    '███',
+    '░░█',
+    '░█░',
+    '░█░',
+    '░█░'
+  ],
+  '8': [
+    '░█░',
+    '█░█',
+    '░█░',
+    '█░█',
+    '░█░'
+  ],
+  '9': [
+    '░██',
+    '█░█',
+    '░██',
+    '░░█',
+    '░██'
+  ],
+  ':': [
+    '░░░',
+    '░█░',
+    '░░░',
+    '░█░',
+    '░░░'
+  ],
+  ';': [
+    '░░░',
+    '░█░',
+    '░░░',
+    '░█░',
+    '█░░'
+  ],
+  '<': [
+    '░░█',
+    '░█░',
+    '█░░',
+    '░█░',
+    '░░█'
+  ],
+  '=': [
+    '░░░',
+    '███',
+    '░░░',
+    '███',
+    '░░░'
+  ],
+  '>': [
+    '█░░',
+    '░█░',
+    '░░█',
+    '░█░',
+    '█░░'
+  ],
+  '?': [
+    '██░',
+    '░░█',
+    '░█░',
+    '░░░',
+    '░█░'
+  ],
+  '@': [
+    '░██',
+    '█░█',
+    '█▐█',
+    '█░░',
+    '░██'
+  ],
+  'A': [
+    '░█░',
+    '█░█',
+    '███',
+    '█░█',
+    '█░█'
+  ],
+  'B': [
+    '██░',
+    '█░█',
+    '██░',
+    '█░█',
+    '██░'
+  ],
+  'C': [
+    '░██',
+    '█░░',
+    '█░░',
+    '█░░',
+    '░██'
+  ],
+  'D': [
+    '██░',
+    '█░█',
+    '█░█',
+    '█░█',
+    '██░'
+  ],
+  'E': [
+    '███',
+    '█░░',
+    '██░',
+    '█░░',
+    '███'
+  ],
+  'F': [
+    '███',
+    '█░░',
+    '██░',
+    '█░░',
+    '█░░'
+  ],
+  'G': [
+    '░██',
+    '█░░',
+    '█░█',
+    '█░█',
+    '░██'
+  ],
+  'H': [
+    '█░█',
+    '█░█',
+    '███',
+    '█░█',
+    '█░█'
+  ],
+  'I': [
+    '███',
+    '░█░',
+    '░█░',
+    '░█░',
+    '███'
+  ],
+  'J': [
+    '███',
+    '░░█',
+    '░░█',
+    '█░█',
+    '░█░'
+  ],
+  'K': [
+    '█░█',
+    '█░█',
+    '██░',
+    '█░█',
+    '█░█'
+  ],
+  'L': [
+    '█░░',
+    '█░░',
+    '█░░',
+    '█░░',
+    '███'
+  ],
+  'M': [
+    '█░█',
+    '███',
+    '█░█',
+    '█░█',
+    '█░█'
+  ],
+  'N': [
+    '█░█',
+    '█▌█',
+    '█▐█',
+    '█░█',
+    '█░█'
+  ],
+  'O': [
+    '░█░',
+    '█░█',
+    '█░█',
+    '█░█',
+    '░█░'
+  ],
+  'P': [
+    '██░',
+    '█░█',
+    '██░',
+    '█░░',
+    '█░░'
+  ],
+  'Q': [
+    '▐█▌',
+    '█░█',
+    '█░█',
+    '▐█▌',
+    '░░█'
+  ],
+  'R': [
+    '██░',
+    '█░█',
+    '██░',
+    '█░█',
+    '█░█'
+  ],
+  'S': [
+    '░██',
+    '█░░',
+    '░█░',
+    '░░█',
+    '██░'
+  ],
+  'T': [
+    '███',
+    '░█░',
+    '░█░',
+    '░█░',
+    '░█░'
+  ],
+  'U': [
+    '█░█',
+    '█░█',
+    '█░█',
+    '█░█',
+    '░█░'
+  ],
+  'V': [
+    '█░█',
+    '█░█',
+    '█░█',
+    '░█░',
+    '░█░'
+  ],
+  'W': [
+    '▌░▐',
+    '▌░▐',
+    '▌▄▐',
+    '███',
+    '█░█'
+  ],
+  'X': [
+    '█░█',
+    '█░█',
+    '░█░',
+    '█░█',
+    '█░█'
+  ],
+  'Y': [
+    '█░█',
+    '█░█',
+    '░█░',
+    '░█░',
+    '░█░'
+  ],
+  'Z': [
+    '███',
+    '░░█',
+    '░█░',
+    '█░░',
+    '███'
+  ],
+  '[': [
+    '██░',
+    '█░░',
+    '█░░',
+    '█░░',
+    '██░'
+  ],
+  '\\': [
+    '█░░',
+    '█░░',
+    '░█░',
+    '░░█',
+    '░░█'
+  ],
+  ']': [
+    '░██',
+    '░░█',
+    '░░█',
+    '░░█',
+    '░██'
+  ],
+  '^': [
+    '░█░',
+    '█░█',
+    '░░░',
+    '░░░',
+    '░░░'
+  ],
+  '_': [
+    '░░░',
+    '░░░',
+    '░░░',
+    '░░░',
+    '███'
+  ],
+  '`': [
+    '█░░',
+    '░█░',
+    '░░░',
+    '░░░',
+    '░░░'
+  ],
+  '{': [
+    '░██',
+    '░█░',
+    '██░',
+    '░█░',
+    '░██'
+  ],
+  '|': [
+    '░█░',
+    '░█░',
+    '░█░',
+    '░█░',
+    '░█░'
+  ],
+  '}': [
+    '██░',
+    '░█░',
+    '░██',
+    '░█░',
+    '██░'
+  ]
+};
+
+    const chars = text.toUpperCase().split('');
+    const charWidth = 4; 
+
+    chars.forEach((ch, i) => {
+      const glyph = FONT[ch] || FONT[' '];
+      const startCol = startX + i * charWidth;
+
+
+      glyph.forEach((line, r) => {
+        for (let c = 0; c < line.length; c++) {
+          const gch = line[c];
+          let color, char;
+      
+          if (gch === '░') {
+            // Halftone shading
+            color = Color.DARK_GRAY;
+            char = CP437.DARK_SHADE;
+          } else if (gch === ' ' || gch === '') {
+            // Background / Empty
+            color = bg;
+            char = ' ';
+          } else {
+            // Everything else (█, ▀, ▄, ▌, ▐) is considered "Solid"
+            color = fg;
+            // We map the string character directly to its CP437 equivalent
+            // or use a map if your CP437 object has specific constants
+            char = gch; 
+          }
+
+          s.putChar(startCol + c, row + r, char, color, bg);
+        }
+      });
+
+    });
+    return Draw;
+  },
+};
+
+module.exports = Draw;

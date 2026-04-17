@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-daily-horoscope",
+  "version": "1.0.0",
+  "description": "SynthDoor Daily Horoscope",
+  "main": "src/index.js",
+  "license": "MIT"
+}

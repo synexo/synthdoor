@@ -1,0 +1,12 @@
+{
+  "name": "@synthdoor/server",
+  "version": "1.0.0",
+  "description": "SynthDoor transport server - telnet, rlogin, web",
+  "main": "src/index.js",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "express-session": "^1.18.0"
+  }
+}

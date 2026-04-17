@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-oregon-trail",
+  "version": "1.0.0",
+  "description": "SynthDoor Oregon Trail \u2014 stub implementation",
+  "main": "src/index.js",
+  "license": "MIT"
+}

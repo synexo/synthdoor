@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-europa-trail",
+  "version": "1.0.0",
+  "description": "A sci-fi settler's journey from Earth to Europa",
+  "main": "src/index.js",
+  "license": "MIT"
+}

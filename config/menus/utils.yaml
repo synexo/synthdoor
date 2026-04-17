@@ -1,0 +1,18 @@
+# utils.yaml — Example utility sub-menu
+# Referenced from top.yaml as:  target: utils
+# See docs/MENU.md for the full schema reference.
+
+title: "Utilities"
+statusbar: "Select a utility.  Q = back"
+columns: 1
+
+selections:
+  - key: "1"
+    text: "High Score Tables"
+    type: action
+    target: back        # placeholder — wire up a real game/action
+
+  - key: "q"
+    text: "Back to Main Menu"
+    type: action
+    target: back

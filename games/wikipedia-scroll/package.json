@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/wikipedia-scroll",
+  "version": "1.0.0",
+  "description": "Endless scroll Wikipedia browser and daily news reader",
+  "main": "src/index.js",
+  "license": "MIT"
+}
