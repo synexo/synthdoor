@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-img2ansi",
+  "version": "1.0.0",
+  "description": "IMG2ANSI - Interactive image to CP437/ANSI art converter",
+  "main": "src/index.js",
+  "license": "MIT"
+}

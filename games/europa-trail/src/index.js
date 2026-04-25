@@ -33,27 +33,27 @@ const CFG = {
   RATION_BURN_PER_CREW: [0, 1, 3, 5],      // Rations: 0=None, 1=Min, 2=Std, 3=Gen
   
   // -- Class Perks --
-  PILOT_FUEL_MULT:      0.9,               // 10% discount on fuel burn
-  ENG_REPAIR_PCT:       15,                // % repaired per part (Engineer)
+  PILOT_FUEL_MULT:      0.8,               // 10% discount on fuel burn
+  ENG_REPAIR_PCT:       20,                // % repaired per part (Engineer)
   BASE_REPAIR_PCT:      10,                // % repaired per part (Others)
 
   // -- Passive System Degradation (Ranges) --
-  WEAR_REACTOR_MAX:     [2, 6],            // Extra reactor wear at Max Pace
-  WEAR_HULL_MAX:        [0, 3],            // Extra hull wear at Max Pace
-  WEAR_REACTOR_STD:     [0, 2],            // Normal reactor wear per week
-  WEAR_LIFE_SUPP:       [0, 2],            // Normal Life Support wear per week
-  LS_CRIT_THRESHOLD:    20,                // Life Support level where crew suffocates
+  WEAR_REACTOR_MAX:     [4, 9],            // Extra reactor wear at Max Pace
+  WEAR_HULL_MAX:        [1, 6],            // Extra hull wear at Max Pace
+  WEAR_REACTOR_STD:     [1, 4],            // Normal reactor wear per week
+  WEAR_LIFE_SUPP:       [1, 4],            // Normal Life Support wear per week
+  LS_CRIT_THRESHOLD:    10,                // Life Support level where crew suffocates
 
   // -- Mining / Combat Minigame --
   MINING_FUEL_COST:     2,
-  TIME_PERFECT:         2.0,               // Seconds to achieve max yield
-  TIME_MODERATE:        4.0,               // Seconds to achieve moderate yield
+  TIME_PERFECT:         3.0,               // Seconds to achieve max yield
+  TIME_MODERATE:        5.0,               // Seconds to achieve moderate yield
   
   YIELD_PERF_RATIONS:   [15, 30],
   YIELD_PERF_FUEL:      [8, 15],
   YIELD_PERF_PARTS:     [1, 3],
   
-  YIELD_MOD_RATIONS:    [8, 15],
+  YIELD_MOD_RATIONS:    [10, 20],
   YIELD_MOD_FUEL:       [3, 8],
   YIELD_MOD_PARTS:      [0, 1],
   
@@ -74,7 +74,7 @@ const CFG = {
   EVT_MADNESS_CREW_DMG: 1,                 // Space madness crew health damage
   EVT_SALVAGE_CHANCE:   0.70,              // 70% chance derelict is safe
   EVT_SALVAGE_FUEL:     [10, 30],
-  EVT_SALVAGE_PARTS:    [1, 4],
+  EVT_SALVAGE_PARTS:    [1, 3],
   EVT_TRAP_HULL:        [10, 25],          // 30% derelict trap hull damage
   EVT_FLEE_CHANCE:      0.50,              // 50% chance to run from pirates
   EVT_FLEE_FUEL:        [10, 30],          // Fuel burned successfully fleeing
@@ -91,9 +91,9 @@ const CFG = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const ART_TITLE = [
-  " ▀▀█▀▀ █░░█ █▀▀   █▀▀ █░░█ █▀▀█ █▀▀█ █▀▀█ █▀▀█   ▀▀█▀▀ █▀▀█ █▀▀█ ▀█▀ █░░ ",
-  " ░░█░░ █▀▀█ █▀▀   █▀▀ █░░█ █▄▄▀ █░░█ █░░█ █▄▄█   ░░█░░ █▄▄▀ █▄▄█ ░█░ █░░ ",
-  " ░░▀░░ ▀░░▀ ▀▀▀   ▀▀▀ ░▀▀▀ ▀░▀▀ ▀▀▀▀ █▀▀▀ ▀░░▀   ░░▀░░ ▀░▀▀ ▀░░▀ ▄█▄ ▀▀▀ "
+  " ▀▀█▀▀ █  █ █▀▀   █▀▀ █  █ █▀▀█ █▀▀█ █▀▀█ █▀▀█   ▀▀█▀▀ █▀▀█ █▀▀█ ▀█▀ █   ",
+  "   █   █▀▀█ █▀▀   █▀▀ █  █ █▄▄▀ █  █ █▄▄█ █▄▄█     █   █▄▄▀ █▄▄█  █  █   ",
+  "   ▀   ▀  ▀ ▀▀▀   ▀▀▀ ▀▀▀▀ ▀ ▀▀ ▀▀▀▀ ▀    ▀  ▀     ▀   ▀ ▀▀ ▀  ▀ ▀▀▀ ▀▀▀ "
 ];
 
 const ART_SHIP = [
@@ -113,33 +113,33 @@ const ART_SHIP = [
 ];
 
 const ART_STATION = [
-  "                     \\          _|_           /",
-  "                      \\  ______|   |______   /",
-  "                       \\|  (O)       (O)  | /",
-  "                        ||_  _  _   _  _  _||",
-  "                       / |  (O)       (O)  | \\",
-  "                      /  |______|___|______|  \\",
-  "                     /           | |           \\"
+  "                           \\          _|_           /",
+  "                            \\  ______|   |______   /",
+  "                             \\|  (O)       (O)  | /",
+  "                               ||_  _  _ _  _  _||",
+  "                             / |  (O)       (O)  | \\",
+  "                            /  |______|___|______|  \\",
+  "                           /           | |           \\"
 ];
 
 const ART_VICTORY = [
-  "                           .-----.       ",
-  "                       _.-'       '-._   ",
-  "                     .'               '. ",
-  "                    /                   \\",
-  "               _..._|                   |_..._",
-  "             .'     |                   |     '.",
-  "            /_______|___________________|_______\\"
+  "                                     .-----.       ",
+  "                                 _.-'       '-._   ",
+  "                               .'               '. ",
+  "                              /                  \\",
+  "                        _..._|                   |_..._",
+  "                      .'     |                   |     '.",
+  "                     /_______|___________________|_______\\"
 ];
 
 const ART_SKULL = [
-  "                             ░░░░░░░░░░░",
-  "                           ░░  ▒▒   ▒▒  ░░",
-  "                          ░░  ▒▒▒   ▒▒▒  ░░",
-  "                          ░░   ░░   ░░   ░░",
-  "                           ░░    ▒▒▒▒    ░░",
-  "                            ░░░ ▒▒▒▒ ░░░",
-  "                             ░ █████ ░"
+  "                                 ░░░░░░░░░░░",
+  "                               ░░  ▒▒   ▒▒  ░░",
+  "                              ░░  ▒▒▒   ▒▒▒  ░░",
+  "                              ░░   ░░   ░░   ░░",
+  "                               ░░    ▒▒▒    ░░",
+  "                                 ░░░ ▒▒▒ ░░░",
+  "                                  ░ █████ ░"
 ];
 
 const TARGET_WORDS = ['ALPHA', 'BRAVO', 'DELTA', 'ECHO', 'NOVA', 'ORION', 'PULSAR', 'QUASAR', 'VOID'];
@@ -147,9 +147,9 @@ const CREW_HEALTH = ['DEAD', 'CRITICAL', 'POOR', 'FAIR', 'OPTIMAL'];
 
 const STATIONS = [
   { dist: 0,   name: 'Lunar Gateway',       mult: 1.0 },
-  { dist: 150, name: 'Mars Space Elevator', mult: 1.2 },
-  { dist: 350, name: 'Ceres Mining Hub',    mult: 1.5 },
-  { dist: 500, name: 'Callisto Relay',      mult: 2.0 },
+  { dist: 150, name: 'Mars Space Elevator', mult: 1.5 },
+  { dist: 350, name: 'Ceres Mining Hub',    mult: 2.0 },
+  { dist: 500, name: 'Callisto Relay',      mult: 2.5 },
   { dist: CFG.VICTORY_DIST, name: 'Europa Colony', mult: 0 } // Destination
 ];
 
@@ -208,6 +208,7 @@ class EuropaTrail extends GameBase {
     this._centerText(msg, null, true);
     
     t.setColor(C.DARK_GRAY, C.BLACK);
+    t.resetAttrs();
     t.println(CP437.BOX2_BL + CP437.BOX2_H.repeat(78) + CP437.BOX2_BR);
     t.resetAttrs();
 
@@ -229,8 +230,7 @@ class EuropaTrail extends GameBase {
         'random deep space events like solar flares, meteoroids, and pirates.'
       ]},
       { hdr: 'RESOURCE MANAGEMENT', col: C.BRIGHT_CYAN, text: [
-        'CREDITS : The currency of the solar system. You will not earn more!',
-        '          However, you can barter and sell excess goods at stations.',
+        'CREDITS : The currency of the solar system.',
         'FUEL    : He-3 Isotopes. Used to fly the ship and maneuver during mining.',
         'RATIONS : Consumed every week. Prevents crew starvation and disease.',
         'PARTS   : Crucial for repairing Hull, Reactor, and Life Support.'
@@ -238,14 +238,11 @@ class EuropaTrail extends GameBase {
       { hdr: 'SHIP SYSTEMS', col: C.BRIGHT_GREEN, text: [
         'HULL         : Protects you from the void. If it hits 0, you die.',
         'REACTOR      : Powers the ship. If it fails, you are stranded.',
-        'LIFE SUPPORT : Provides oxygen. If it fails, the crew suffocates rapidly.',
-        'Systems degrade naturally over time. Repair them using PARTS.'
+        'LIFE SUPPORT : Provides oxygen. If it fails, the crew suffocates rapidly.'
       ]},
       { hdr: 'ACTIONS & RISKS', col: C.BRIGHT_YELLOW, text: [
-        'FLYING : Faster speeds reach Europa sooner, but burn exponentially',
-        '         more fuel and severely damage the reactor over time.',
-        'MINING : Yields critical resources, but consumes rations, takes a week,',
-        '         and causes unavoidable hull damage from asteroid shrapnel.'
+        'FLYING : Faster speeds burn more fuel and damage the reactor over time.',
+        'MINING : Yields resources but takes time and exposes the hull to damage.',
       ]}
     ];
 
@@ -488,6 +485,7 @@ class EuropaTrail extends GameBase {
       t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to continue...');
       await t.waitKey();
     }
+    t.println();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -697,7 +695,8 @@ class EuropaTrail extends GameBase {
     this._checkCrewDeaths();
     this._checkShipFailure();
     
-    if (!this.s.dead) {
+    if (!this.s.dead && !isCombat) {
+      t.println();
       t.setColor(C.DARK_GRAY, C.BLACK); t.print('  Press any key to return to command...');
       await t.waitKey();
     }
@@ -713,7 +712,9 @@ class EuropaTrail extends GameBase {
     if (!isInit) {
       t.clearScreen(); t.moveTo(1,1);
       t.setColor(C.BRIGHT_CYAN, C.BLACK);
-      for (const line of ART_STATION) this._centerText(line, C.BRIGHT_CYAN);
+      for (const line of ART_STATION) {
+        t.println(line);
+      }
       t.println();
       this._centerText(`ARRIVED AT: ${station.name}`, C.BRIGHT_WHITE);
       t.println();
@@ -923,6 +924,7 @@ class EuropaTrail extends GameBase {
         await this._miningMinigame(true); // Tactical combat
       }
     }
+    t.println();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -966,7 +968,9 @@ class EuropaTrail extends GameBase {
     t.clearScreen(); t.moveTo(1,1);
     
     t.setColor(C.BRIGHT_RED, C.BLACK);
-    for (const line of ART_SKULL) this._centerText(line, C.BRIGHT_RED);
+    for (const line of ART_SKULL) {
+      t.println(line);
+    }
     t.println();
     
     this._centerText('M I S S I O N   F A I L U R E', C.BRIGHT_WHITE);
@@ -994,7 +998,9 @@ class EuropaTrail extends GameBase {
     t.clearScreen(); t.moveTo(1,1);
     
     t.setColor(C.BRIGHT_CYAN, C.BLACK);
-    for (const line of ART_VICTORY) this._centerText(line, C.BRIGHT_CYAN);
+    for (const line of ART_VICTORY) {
+      this._centerText(line);
+    }
     t.println();
 
     t.setColor(C.BRIGHT_YELLOW, C.BLACK);

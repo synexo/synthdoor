@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/usurper-reborn",
+  "version": "1.0.0",
+  "description": "Usurper Reborn",
+  "main": "src/index.js",
+  "license": "MIT"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-bbs-client",
+  "version": "1.0.0",
+  "description": "A Telnet proxy and BBS directory for SynthDoor",
+  "main": "src/index.js",
+  "license": "MIT"
+}

@@ -1,0 +1,11 @@
+Drop the mrc-chat/ folder into your games/ directory and add this to synthdoor.conf:
+ini[game:mrc-chat]
+host     = mrc.bottomlessabyss.net
+port     = 5001
+ssl      = true
+bbs_name = Your BBS Name
+bbs_web  = https://yourbbs.net
+bbs_tel  = yourbbs.net:23
+bbs_ssh  = yourbbs.net:22
+bbs_sys  = YourSysopName
+bbs_dsc  = A great BBS on SynthDoor

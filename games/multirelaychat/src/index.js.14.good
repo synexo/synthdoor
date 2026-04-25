@@ -1,0 +1,1001 @@
+'use strict';
+const path = require('path');
+const net  = require('net');
+const tls  = require('tls');
+
+// CRITICAL: Always use path.join for engine imports
+const { GameBase, Screen, Color } = require(
+  path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'index.js')
+);
+
+// CRITICAL: Import Utils DIRECTLY from utils.js
+const Utils = require(
+  path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'utils.js')
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Constants
+// ─────────────────────────────────────────────────────────────────────────────
+const PROTOCOL_VERSION = '1.3';
+const CLIENT_VERSION   = '100';
+const CLIENT_NAME      = 'SynthDoor-MRC';
+const CTCP_ROOM        = 'ctcp_echo_channel';
+const MSG_MAX          = 140;
+
+// Default MRC host — operator can override via synthdoor.conf [game:mrc-chat]
+const DEFAULT_HOST     = 'mrc.bottomlessabyss.net';
+const DEFAULT_PORT     = 5001;
+const DEFAULT_SSL      = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CP437 / Color helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// Map Mystic-style pipe codes  |01 … |23  to Color constants
+const PIPE_FG = [
+  Color.BLACK,        // 00
+  Color.BLUE,         // 01
+  Color.GREEN,        // 02
+  Color.CYAN,         // 03
+  Color.RED,          // 04
+  Color.MAGENTA,      // 05
+  Color.YELLOW,       // 06
+  Color.WHITE,        // 07
+  Color.DARK_GRAY,    // 08
+  Color.BRIGHT_BLUE,  // 09
+  Color.BRIGHT_GREEN, // 10
+  Color.BRIGHT_CYAN,  // 11
+  Color.BRIGHT_RED,   // 12
+  Color.BRIGHT_MAGENTA,// 13
+  Color.BRIGHT_YELLOW, // 14
+  Color.BRIGHT_WHITE,  // 15
+];
+const PIPE_BG = [
+  Color.BLACK,    // 16
+  Color.BLUE,     // 17
+  Color.GREEN,    // 18
+  Color.CYAN,     // 19
+  Color.RED,      // 20
+  Color.MAGENTA,  // 21
+  Color.YELLOW,   // 22
+  Color.WHITE,    // 23
+];
+
+function stripPipe(s) {
+  return s.replace(/\|(\d{2})/g, '');
+}
+
+function visLen(s) {
+  return stripPipe(s).length;
+}
+
+/**
+ * Print a pipe-coded string to the terminal in scroll mode.
+ */
+function printPipe(terminal, str, defaultFg = Color.WHITE, defaultBg = Color.BLACK) {
+  let fg = defaultFg;
+  let bg = defaultBg;
+  terminal.setColor(fg, bg);
+  
+  let buf = '';
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '|' && i + 2 < str.length) {
+      const code = parseInt(str.substring(i + 1, i + 3), 10);
+      if (!isNaN(code)) {
+        if (buf.length > 0) {
+          terminal.write(buf);
+          buf = '';
+        }
+        if (code <= 15) {
+          fg = PIPE_FG[code] !== undefined ? PIPE_FG[code] : Color.WHITE;
+        } else if (code <= 23) {
+          bg = PIPE_BG[code - 16] !== undefined ? PIPE_BG[code - 16] : Color.BLACK;
+        }
+        terminal.setColor(fg, bg);
+        i += 2;
+        continue;
+      }
+    }
+    buf += str[i];
+  }
+  if (buf.length > 0) terminal.write(buf);
+  terminal.resetAttrs();
+}
+
+function makePacket(fromUser, fromSite, fromRoom, toUser, msgExt, toRoom, body) {
+  return `${fromUser}~${fromSite}~${fromRoom}~${toUser}~${msgExt}~${toRoom}~${body}~\n`;
+}
+
+function parsePacket(line) {
+  const parts = line.split('~');
+  if (parts.length < 7) return null;
+  
+  // Cleanly rebuild the body string in case standard chat messages contain tildes
+  if (parts.length > 7 && parts[parts.length - 1] === '') {
+    parts.pop();
+  }
+  const body = parts.slice(6).join('~');
+
+  return {
+    fromUser : parts[0],
+    fromSite : parts[1],
+    fromRoom : parts[2],
+    toUser   : parts[3],
+    msgExt   : parts[4],
+    toRoom   : parts[5],
+    body     : body,
+  };
+}
+
+function wordWrap(text, width) {
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    if (line === '') {
+      line = word;
+    } else if (visLen(line) + 1 + visLen(word) <= width) {
+      line += ' ' + word;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MRC-Chat Game
+// ─────────────────────────────────────────────────────────────────────────────
+class MrcChat extends GameBase {
+  static get GAME_NAME()  { return 'mrc-chat'; }
+  static get GAME_TITLE() { return 'MRC Chat'; }
+
+  async run() {
+    this._host    = (this.config && this.config.host)     || DEFAULT_HOST;
+    this._port    = parseInt((this.config && this.config.port) || DEFAULT_PORT, 10);
+    this._useSSL  = this.config && this.config.ssl !== undefined
+                    ? String(this.config.ssl).toLowerCase() !== 'false'
+                    : DEFAULT_SSL;
+    this._bbsName = (this.config && this.config.bbs_name) || 'SynthDoor BBS';
+    this._bbsWeb  = (this.config && this.config.bbs_web)  || 'NONE';
+    this._bbsTel  = (this.config && this.config.bbs_tel)  || 'NONE';
+    this._bbsSsh  = (this.config && this.config.bbs_ssh)  || 'NONE';
+    this._bbsSys  = (this.config && this.config.bbs_sys)  || 'Sysop';
+    this._bbsDsc  = (this.config && this.config.bbs_dsc)  || 'A SynthDoor BBS';
+
+    this._socket       = null;
+    this._connected    = false;
+    this._running      = true;
+    this._inChat       = false;
+    this._room         = 'lobby';
+    this._topic        = '';
+    this._chatters     = [];
+    this._printNextUserlist = false;
+    this._lastDMFrom   = '';
+    this._mentions     = [];
+    this._inputBuf     = '';
+    this._inputMasking = false;
+    this._partialPacket = '';
+    
+    // Strip tildes from nicks to prevent protocol injection and enforce underscores
+    this._nick         = (this.username || 'guest').replace(/~/g, '-').replace(/\s/g, '_').substring(0, 30);
+    this._fromSite     = this._bbsName.replace(/[~\s]/g, '_').substring(0, 30);
+    this._displayNick  = this._nick;
+    this._twits        = new Set();
+
+    // SCROLL mode is perfect for CLI-style apps
+    this.screen.setMode(Screen.SCROLL);
+
+    await this._showSplash();
+    if (!this._running) return;
+
+    await this._connectAndChat();
+  }
+
+  async onDisconnect() {
+    this.log('Client disconnected from SynthDoor. Closing MRC resources.');
+    this._running = false;
+    this._inChat  = false;
+    if (this._quitChat) this._quitChat(); // Resolve the main event loop
+    if (this._socket) {
+      try { this._socket.destroy(); } catch (_) {}
+      this._socket = null;
+    }
+  }
+
+  async _showSplash() {
+    this.terminal.clearScreen();
+    this.terminal.println('');
+    this.terminal.setColor(Color.BRIGHT_CYAN, Color.BLACK);
+    this.terminal.println('  ███╗   ███╗██████╗  ██████╗');
+    this.terminal.println('  ████╗ ████║██╔══██╗██╔════╝');
+    this.terminal.println('  ██╔████╔██║██████╔╝██║     ');
+    this.terminal.println('  ██║╚██╔╝██║██╔══██╗██║     ');
+    this.terminal.println('  ██║ ╚═╝ ██║██║  ██║╚██████╗');
+    this.terminal.println('  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝');
+    this.terminal.println('');
+    this.terminal.setColor(Color.CYAN, Color.BLACK);
+    this.terminal.println('  Multi-Relay Chat for SynthDoor');
+    this.terminal.println('');
+    
+    this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
+    this.terminal.println('  ────────────────────────────────────────');
+    this.terminal.setColor(Color.WHITE, Color.BLACK);
+    this.terminal.println(`  Host   : ${this._host}`);
+    this.terminal.println(`  Port   : ${this._port}`);
+    this.terminal.println(`  SSL    : ${this._useSSL ? 'Yes' : 'No'}`);
+    this.terminal.println(`  Nick   : ${this._nick.replace(/_/g, ' ')}`);
+    this.terminal.println(`  BBS    : ${this._bbsName}`);
+    this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
+    this.terminal.println('  ────────────────────────────────────────');
+    this.terminal.println('');
+    
+    this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
+    this.terminal.print('  Press [ENTER] to Connect or [Q] to Quit > ');
+    this.terminal.resetAttrs();
+
+    // Blocking wait loop (no action mapper)
+    while (true) {
+      const key = await this.terminal.waitKey();
+      if (key.toLowerCase() === 'q') {
+        this._running = false;
+        break;
+      }
+      if (key === '\r' || key === '\n' || key === 'Enter') {
+        break;
+      }
+    }
+    
+    this.terminal.println('');
+    this.terminal.println('');
+  }
+
+  async _connectAndChat() {
+    this.terminal.setColor(Color.CYAN, Color.BLACK);
+    this.terminal.print(`Establishing connection to ${this._host}... `);
+    
+    this.log(`MRC: Attempting connection to ${this._host}:${this._port} (SSL: ${this._useSSL})`);
+
+    try {
+      await this._openSocket();
+      this.log('MRC: Connection established successfully.');
+      this.terminal.setColor(Color.BRIGHT_GREEN, Color.BLACK);
+      this.terminal.println('Connected!');
+    } catch (err) {
+      this.log(`MRC: Connection failed: ${err.message}`);
+      this.terminal.setColor(Color.BRIGHT_RED, Color.BLACK);
+      this.terminal.println('Failed!');
+      
+      this.terminal.println('');
+      this.terminal.setColor(Color.BRIGHT_RED, Color.BLACK);
+      this.terminal.println(`MRC CHAT — Error: Connection failed: ${err.message}`);
+      await this._sleep(3000);
+      return;
+    }
+
+    await this._runChat();
+  }
+
+  _openSocket() {
+    return new Promise((resolve, reject) => {
+      const opts = { host: this._host, port: this._port };
+
+      const onConnect = () => {
+        this._connected = true;
+        this._setupSocketHandlers();
+        resolve();
+      };
+
+      if (this._useSSL) {
+        this._socket = tls.connect({ ...opts, rejectUnauthorized: false }, onConnect);
+      } else {
+        this._socket = net.connect(opts, onConnect);
+      }
+
+      this._socket.once('error', reject);
+      this._socket.setTimeout(15000, () => reject(new Error('Connection timed out')));
+    });
+  }
+
+  _setupSocketHandlers() {
+    this._socket.setTimeout(0);
+    this._socket.setEncoding('utf8');
+
+    // Parse incoming chunks and trigger _handleIncoming directly (Event-Driven)
+    this._socket.on('data', (chunk) => {
+      const data = this._partialPacket + chunk;
+      const lines = data.split('\n');
+      this._partialPacket = lines.pop(); // save incomplete fragment
+      for (const line of lines) {
+        if (line.trim()) {
+          this.log(`MRC RX: ${line.trim()}`);
+          this._handleIncoming(line.trim());
+        }
+      }
+    });
+
+    this._socket.on('close', () => {
+      this.log('MRC: Socket closed by remote host.');
+      this._connected = false;
+      this._handleIncoming('__DISCONNECTED__');
+    });
+
+    this._socket.on('error', (err) => {
+      this.log(`MRC: Socket error: ${err.message}`);
+      this._connected = false;
+      this._handleIncoming(`__ERROR__:${err.message}`);
+    });
+  }
+
+  _send(data) {
+    if (this._connected && this._socket) {
+      try { 
+        this.log(`MRC TX: ${data.trim()}`);
+        this._socket.write(data); 
+      } catch (err) {
+        this.log(`MRC TX Error: ${err.message}`);
+      }
+    }
+  }
+
+  _sendPacket(fromUser, fromSite, fromRoom, toUser, msgExt, toRoom, body) {
+    this._send(makePacket(fromUser, fromSite, fromRoom, toUser, msgExt, toRoom, body));
+  }
+
+  _sendCmd(cmd, arg) {
+    const body = arg ? `${cmd}:${arg}` : cmd;
+    this._sendPacket(this._displayNick, this._fromSite, this._room, 'SERVER', '', this._room, body);
+  }
+
+  _sendMsg(toUser, msgExt, toRoom, body) {
+    this._sendPacket(this._displayNick, this._fromSite, this._room, toUser, msgExt, toRoom, body);
+  }
+
+  _sendHandshake() {
+    const cleanBbs = this._bbsName.replace(/~/g, '-');
+    const hs = `${cleanBbs}~${CLIENT_NAME}/SynthDoor.Node/${PROTOCOL_VERSION}.${CLIENT_VERSION}\n`;
+    this._send(hs);
+  }
+
+  _sendInfoPackets() {
+    // Send Multiplexer / BBS commands strictly via the 'CLIENT' username
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `INFOWEB:${this._bbsWeb}`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `INFOTEL:${this._bbsTel}`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `INFOSSH:${this._bbsSsh}`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `INFOSYS:${this._bbsSys}`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `INFODSC:${this._bbsDsc}`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `TERMSIZE:80,24`);
+    this._sendPacket('CLIENT', this._fromSite, '', 'SERVER', 'ALL', '', `BBSMETA: SecLevel(99) Sysop(${this._bbsSys})`);
+    this._sendPacket('CLIENT', this._fromSite, '1', 'SERVER', Date.now().toString(), '', `IMALIVE:${this._bbsName}`);
+    this._sendPacket('CLIENT', this._fromSite, '1', 'SERVER', '', '', 'CAPABILITIES:MCI CTCP');
+    
+    // User context info packets (Dynamic remote address)
+    let ip = '127.0.0.1';
+    if (this.terminal && this.terminal.socket && this.terminal.socket.remoteAddress) {
+       ip = this.terminal.socket.remoteAddress;
+    }
+    if (ip.startsWith('::ffff:')) ip = ip.substring(7); // Clean IPv4-mapped IPv6
+    this._sendPacket(this._displayNick, this._fromSite, '', 'SERVER', '', '', `USERIP:${ip}`);
+  }
+
+  async _runChat() {
+    this._inChat = true;
+    
+    this.terminal.println('');
+    this._redrawInput();
+    this._sendHandshake();
+
+    // Start raw key listener for typing
+    this._setupInputHandlers();
+
+    // Setup network keepalive - Only IAMHERE context.
+    // The Multiplexer IMALIVE context is strictly handled by _handleIncoming(PING) responses.
+    this._pingInterval = setInterval(() => {
+      if (this._connected) {
+        const now = Date.now();
+        
+        if (now - this._lastActivity > 600000) {
+          this._isAway = true;
+          this._sendCmd('IAMHERE', 'AWAY');
+        } else {
+          if (this._manualAfk) {
+            this._sendCmd('IAMHERE', 'AWAY');
+          } else {
+            this._sendCmd('IAMHERE', 'ACTIVE');
+          }
+        }
+        this._lastIamHere = now;
+      }
+    }, 60000);
+
+    // Block execution until disconnect or /quit
+    await new Promise(resolve => {
+      this._quitChat = resolve;
+    });
+
+    // Cleanup and disconnect
+    clearInterval(this._pingInterval);
+    this._removeInputHandlers();
+
+    if (this._connected) {
+      this._sendMsg('NOTME', '', '', '|08- ' + this._displayNick.replace(/_/g, ' ') + ' |04has left.');
+      this._sendCmd('LOGOFF', '');
+      await this._sleep(200);
+      try { this._socket.destroy(); } catch (_) {}
+    }
+
+    this.terminal.println('');
+    this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
+    this.terminal.println('Disconnected from MRC. Thanks for chatting!');
+    this.terminal.setColor(Color.CYAN, Color.BLACK);
+    this.terminal.print('Press any key to return... ');
+    this.terminal.resetAttrs();
+    await this.terminal.waitKey();
+  }
+
+  /**
+   * Clears the current line and repaints the prompt + input buffer
+   */
+  _redrawInput() {
+    // Return to Col 1 (\r) and clear to End-Of-Line (\x1b[K)
+    this.terminal.writeRaw('\r\x1b[K');
+    
+    this.terminal.setColor(Color.BRIGHT_GREEN, Color.BLACK);
+    this.terminal.print(`[${this._room}]> `);
+    
+    this.terminal.setColor(Color.WHITE, Color.BLACK);
+    const display = this._inputMasking
+      ? '*'.repeat(this._inputBuf.length)
+      : this._inputBuf;
+      
+    this.terminal.print(display);
+    this.terminal.resetAttrs();
+  }
+
+  _reportActivity() {
+    const now = Date.now();
+    this._lastActivity = now;
+    
+    // Instantly clear the 'Away' flag if the user typed something
+    if (this._isAway) {
+      this._isAway = false;
+      this._manualAfk = false;
+      this._sendCmd('IAMHERE', 'ACTIVE');
+      this._lastIamHere = now;
+    }
+  }
+
+  _setupInputHandlers() {
+    this._lastActivity = Date.now();
+    this._lastIamHere = 0;
+    this._isAway = false;
+    this._manualAfk = false;
+
+    this._onKey = (key) => {
+      // Ignore all ANSI escape sequences (arrows, home, end, etc.)
+      if (key.startsWith('\x1b')) return;
+
+      this._reportActivity();
+
+      // Enter / Return
+      if (key === '\r' || key === '\n' || key === 'Enter') {
+        this._submitInput();
+        return;
+      }
+
+      // Backspace
+      const lowerKey = key.toLowerCase();
+      if (key === '\x7f' || key === '\b' || lowerKey === 'backspace' || lowerKey === 'delete') {
+        if (this._inputBuf.length > 0) {
+          this._inputBuf = this._inputBuf.slice(0, -1);
+          this._redrawInput();
+        }
+        return;
+      }
+      
+      // Standard printable characters (including Spacebar)
+      if (key.length === 1 && key >= ' ' && key <= '~') {
+        if (this._inputBuf.length < MSG_MAX) {
+          this._inputBuf += key;
+          
+          // Check for masking triggers (e.g. passwords)
+          const low = this._inputBuf.toLowerCase();
+          this._inputMasking = low.startsWith('/identify ') || low.startsWith('/register ') || low.startsWith('/roompass ');
+          
+          this._redrawInput();
+        }
+      }
+    };
+
+    // Listen to raw terminal strokes, entirely bypassing action mapping
+    this.terminal.on('key', this._onKey);
+  }
+
+  _removeInputHandlers() {
+    if (this._onKey) this.terminal.removeListener('key', this._onKey);
+  }
+
+  _submitInput() {
+    const text = this._inputBuf.trim();
+    this._inputBuf = '';
+    this._inputMasking = false;
+    
+    // Clear the line immediately to prevent echoing stutter
+    this.terminal.writeRaw('\r\x1b[K');
+    
+    if (!text) {
+      this._redrawInput();
+      return;
+    }
+
+    if (text.startsWith('/')) {
+      this._processCommand(text);
+    } else {
+      // Send standard chat message - targeting EMPTY user explicitly for standard room broadcast
+      const body = `|15${this._displayNick.replace(/_/g, ' ')}|07 |07${text}`;
+      this._sendMsg('', '', this._room, body);
+      // Echo locally
+      this._addLine(`|08[me] |07${text}`, false);
+    }
+  }
+
+  _processCommand(text) {
+    const spaceIdx = text.indexOf(' ');
+    const cmd    = spaceIdx > 0 ? text.substring(1, spaceIdx).toLowerCase() : text.substring(1).toLowerCase();
+    const params = spaceIdx > 0 ? text.substring(spaceIdx + 1) : '';
+
+    switch (cmd) {
+      case 'quit': case 'q':
+        this._inChat = false;
+        if (this._quitChat) this._quitChat();
+        break;
+
+      case 'join': case 'j': {
+        // Strip tildes so malicious/bad room names don't drop the connection
+        const newRoom = params.replace('#', '').replace(/\s+/g, '_').replace(/\|.{2}/g, '').replace(/~/g, '-');
+        if (newRoom) {
+          this._sendCmd('NEWROOM', `${this._room}:${newRoom}`);
+          this._addLine(`|14* Requesting to join #${newRoom}...`, false);
+        } else {
+           this._redrawInput();
+        }
+        break;
+      }
+
+      case 'msg': case 't': {
+        const parts = params.split(' ');
+        const to = parts[0];
+        const msg = parts.slice(1).join(' ');
+        if (to && msg) {
+          const body = `|15* |08(|15${this._displayNick.replace(/_/g, ' ')}|08/|14DirectMsg|08) |07${msg}`;
+          // ToUser is 'to', ToRoom is empty
+          this._sendMsg(to, '', '', body);
+          this._addLine(`|15* |08(|14DirectMsg|08->|15${to.replace(/_/g, ' ')}|08) |07${msg}`, false);
+        } else {
+          this._redrawInput();
+        }
+        break;
+      }
+
+      case 'r': {
+        if (this._lastDMFrom && params) {
+          const body = `|15* |08(|15${this._displayNick.replace(/_/g, ' ')}|08/|14DirectMsg|08) |07${params}`;
+          this._sendMsg(this._lastDMFrom, '', '', body);
+          this._addLine(`|15* |08(|14DirectMsg|08->|15${this._lastDMFrom.replace(/_/g, ' ')}|08) |07${params}`, false);
+        } else {
+          this._redrawInput();
+        }
+        break;
+      }
+
+      case 'me':
+        if (params) {
+          const body = `|15* |13${this._displayNick.replace(/_/g, ' ')} ${params}`;
+          this._sendMsg('', '', this._room, body);
+        }
+        this._redrawInput();
+        break;
+
+      case 'topic':
+        if (params) {
+          this._sendCmd(`NEWTOPIC:${this._room}`, params);
+        }
+        this._redrawInput();
+        break;
+
+      case 'rooms': case 'list':
+        this._sendCmd('list', '');
+        this._redrawInput();
+        break;
+
+      case 'users': case 'whoon':
+        this._sendCmd(cmd, '');
+        this._printNextUserlist = true;
+        // The protocol requires USERLIST requests to originate from the multiplexer (CLIENT) targeting the specified room
+        this._sendPacket('CLIENT', this._fromSite, this._room, 'SERVER', 'ALL', '', 'USERLIST');
+        this._redrawInput();
+        break;
+
+      case 'motd':
+        this._sendCmd('motd', '');
+        this._redrawInput();
+        break;
+        
+      case 'afk':
+        this._isAway = true;
+        this._manualAfk = true;
+        // MRC 1.3 deprecated the STATUS verb in favor of room helpers
+        this._sendMsg('', '', this._room, '!status AFK ' + (params || 'Away from keyboard'));
+        this._redrawInput();
+        break;
+
+      case 'register':
+        if (params) {
+          this._sendPacket(this._displayNick, this._fromSite, this._room, 'SERVER', '', '', `REGISTER ${params}`);
+          this._addLine('|14* Registration request sent to server.', false);
+        } else {
+          this._addLine('|12* Usage: /register <password> [email]', false);
+        }
+        this._redrawInput();
+        break;
+
+      case 'identify': case 'id':
+        if (params) {
+          this._sendPacket(this._displayNick, this._fromSite, this._room, 'SERVER', '', '', `IDENTIFY ${params}`);
+          this._addLine('|14* Identify request sent to server.', false);
+        } else {
+          this._addLine('|12* Usage: /identify <password>', false);
+        }
+        this._redrawInput();
+        break;
+        
+      case 'update':
+        if (params) {
+          this._sendPacket(this._displayNick, this._fromSite, this._room, 'SERVER', '', '', `UPDATE ${params}`);
+          this._addLine('|14* Update request sent to server.', false);
+        }
+        this._redrawInput();
+        break;
+
+      case 'twit': {
+        const tparts = params.split(' ');
+        const action = tparts[0] ? tparts[0].toLowerCase() : '';
+        const who    = tparts[1] || '';
+        if (action === 'add' && who) {
+          this._twits.add(who.toLowerCase());
+          this._addLine(`|15* |14${who} |07added to twit list.`, false);
+        } else if (action === 'del' && who) {
+          this._twits.delete(who.toLowerCase());
+          this._addLine(`|15* |14${who} |07removed from twit list.`, false);
+        } else if (action === 'list') {
+          if (this._twits.size === 0) {
+            this._addLine('|07Twit list is empty.', false);
+          } else {
+            for (const t of this._twits) this._addLine(`|08* |07${t}`, false);
+          }
+        } else if (action === 'clear') {
+          this._twits.clear();
+          this._addLine('|15* |07Twit list cleared.', false);
+        } else {
+          this._redrawInput();
+        }
+        break;
+      }
+
+      case 'mentions':
+        if (this._mentions.length === 0) {
+          this._addLine('|07No recent mentions.', false);
+        } else {
+          this._addLine('|14--- Recent Mentions ---', false);
+          for (const m of this._mentions) {
+            this._addLine(m, false);
+          }
+          this._addLine('|14-----------------------', false);
+        }
+        break;
+
+      case 'ctcp': {
+        const cparts = params.split(' ');
+        const target = cparts[0];
+        const ctcpcmd = (cparts[1] || '').toUpperCase();
+        if (target && ctcpcmd) {
+          const ctcpData = `${ctcpcmd} ${this._displayNick.replace(/_/g, ' ')}`;
+          this._sendPacket(this._displayNick, this._fromSite, CTCP_ROOM,
+            target, '', CTCP_ROOM, `[CTCP] ${ctcpData}`);
+        }
+        this._redrawInput();
+        break;
+      }
+
+      case 'help':
+        const helpLines = [
+          '|15/join |11#room      |07- Join a chat room',
+          '|15/quit             |07- Leave MRC chat',
+          '|15/msg |11user text   |07- Send a direct message',
+          '|15/r |11text         |07- Reply to last DM',
+          '|15/me |11action      |07- Send an action',
+          '|15/topic |11text     |07- Change room topic (!topics for history)',
+          '|15/rooms            |07- List rooms',
+          '|15/users            |07- List users in room',
+          '|15/motd             |07- Show message of the day',
+          '|15/afk |11[msg]      |07- Set yourself as Away',
+          '|15/register |11pass  |07- Register your MRC handle',
+          '|15/identify |11pass  |07- Login to your registered handle',
+          '|15/twit add|11 user  |07- Add user to twit filter',
+          '|15/ctcp |11user cmd  |07- Send CTCP command',
+          '|15/mentions         |07- Show recent mentions',
+          '|08Type |15!help|08 in the room for additional server helpers.',
+        ];
+        for (const l of helpLines) this._addLine(l, false);
+        break;
+
+      default:
+        // Pass unknown commands straight to server
+        this._sendCmd(cmd.toUpperCase(), params);
+        this._redrawInput();
+        break;
+    }
+  }
+
+  _handleIncoming(line) {
+    if (line === '__DISCONNECTED__') {
+      this._addLine('|12* Connection closed by server.', true);
+      this._inChat = false;
+      if (this._quitChat) this._quitChat();
+      return;
+    }
+    
+    if (line.startsWith('__ERROR__:')) {
+      this._addLine(`|12* Network error: ${line.substring(10)}`, true);
+      this._inChat = false;
+      if (this._quitChat) this._quitChat();
+      return;
+    }
+
+    if (!line.includes('~')) return;
+
+    const pkt = parsePacket(line);
+    if (!pkt) return;
+
+    const { fromUser, fromRoom, toUser, msgExt, toRoom, body } = pkt;
+    
+    // Convert underscores to spaces for human-readable display of names
+    const cleanFromUser = fromUser.replace(/_/g, ' ');
+    const cleanToUser   = toUser.replace(/_/g, ' ');
+
+    // Strip unprintable control characters, but ALLOW \x01 through \x06 
+    // to support MRC 1.3+ CP437 Smiley and Card suits. Strip \x07 (BEL) and \x00 (NUL).
+    const cleanBody = body.replace(/[\x00\x07-\x1f]/g, '_');
+
+    // SERVER messages
+    if (fromUser === 'SERVER') {
+      const tUser = toUser ? toUser.toUpperCase() : '';
+      const myNick = this._displayNick.toUpperCase();
+
+      // Intercept Multiplexer traffic routed specifically to the CLIENT
+      if (tUser === 'CLIENT') {
+        const cmdStr = cleanBody.split(':')[0].toUpperCase();
+        
+        if (cmdStr === 'PING' || cleanBody.toUpperCase() === 'PING') {
+           this._sendPacket('CLIENT', this._fromSite, '1', 'SERVER', Date.now().toString(), '', `IMALIVE:${this._bbsName}`);
+           return;
+        }
+        if (cmdStr === 'PONG' || cleanBody.toUpperCase() === 'PONG') {
+           if (msgExt) {
+             const sentTime = parseFloat(msgExt);
+             if (!isNaN(sentTime)) {
+                this.log(`MRC PONG Latency: ${Date.now() - sentTime}ms`);
+             }
+           }
+           return;
+        }
+      }
+
+      // Auto-detect room changes from the server targeting the user specifically
+      if (toRoom && toRoom !== this._room) {
+        if (tUser === myNick) {
+          this._room = toRoom;
+        }
+      }
+
+      if (toRoom === this._room || !toRoom || tUser === 'CLIENT') {
+        this._handleServerMessage(cleanBody, toUser);
+      }
+      
+      if (tUser === 'NOTME') {
+        if ((!fromRoom || fromRoom === this._room) && (!toRoom || toRoom === this._room)) {
+          this._addLine(cleanBody, false);
+        }
+      }
+      return;
+    }
+
+    // CTCP
+    if (toRoom === CTCP_ROOM && fromRoom === CTCP_ROOM) {
+      this._handleCtcp(cleanBody, cleanToUser, cleanFromUser);
+      return;
+    }
+
+    // NOTME (room broadcasts from other users)
+    if (toUser.toUpperCase() === 'NOTME') {
+      if ((!fromRoom || fromRoom === this._room) && (!toRoom || toRoom === this._room)) {
+        this._addLine(cleanBody, false);
+        this._sendPacket('CLIENT', this._fromSite, this._room, 'SERVER', 'ALL', '', 'USERLIST');
+      }
+      return;
+    }
+
+    // Regular chat / DM
+    const forMe = (!toUser || toUser.toUpperCase() === 'ALL' || cleanToUser.toLowerCase() === this._displayNick.replace(/_/g, ' ').toLowerCase());
+    const forRoom = (!toRoom || toRoom === this._room);
+    
+    if (forMe && forRoom) {
+      if (this._twits.has(cleanFromUser.toLowerCase())) return;
+
+      // DM
+      if (toUser && toUser.toUpperCase() !== 'ALL' && fromUser) {
+        this._addLine(cleanBody, false);
+        this._lastDMFrom = fromUser;
+        return;
+      }
+
+      // Mentions
+      const displayNickSpace = this._displayNick.replace(/_/g, ' ').toLowerCase();
+      const mentioned = cleanFromUser.toLowerCase() !== displayNickSpace &&
+        cleanBody.toLowerCase().includes(displayNickSpace);
+
+      this._addLine(cleanBody, mentioned);
+    }
+  }
+
+  _handleServerMessage(body, toUser) {
+    const colonIdx = body.indexOf(':');
+    const rawCmd = colonIdx >= 0 ? body.substring(0, colonIdx) : body;
+    const cmd    = rawCmd.toUpperCase();
+    const params = colonIdx >= 0 ? body.substring(colonIdx + 1) : '';
+
+    switch (cmd) {
+      case 'HELLO':
+        this._sendInfoPackets();
+        this._sendCmd('motd', '');
+        this._printNextUserlist = true;
+        this._sendCmd('NEWROOM', `:${this._room}`);
+        
+        // Immediately declare presence so we don't start as AWAY on login
+        this._isAway = false;
+        this._manualAfk = false;
+        this._lastActivity = Date.now();
+        this._lastIamHere = Date.now();
+        this._sendCmd('IAMHERE', 'ACTIVE');
+
+        this._addLine(`|10* Connected to MRC! Type |15/help |10for commands.`, false);
+        break;
+
+      case 'ROOMTOPIC': {
+        const spaceIdx = params.indexOf(' ');
+        const rName = spaceIdx > 0 ? params.substring(0, spaceIdx) : params;
+        const newTopic = spaceIdx > 0 ? params.substring(spaceIdx + 1) : '';
+        if (this._topic !== newTopic || this._room === rName) {
+          this._topic = newTopic;
+          this._addLine(`|11* Topic for #${rName}: |14${this._topic || '(none)'}`, false);
+        }
+        break;
+      }
+
+      case 'USERROOM':
+        // The server acknowledges our room change request
+        if (this._room !== params) {
+          this._room = params;
+          this._addLine(`|11* You have joined #${this._room}`, false);
+          this._printNextUserlist = true;
+          this._sendPacket('CLIENT', this._fromSite, this._room, 'SERVER', 'ALL', '', 'USERLIST');
+        }
+        break;
+
+      case 'USERNICK':
+        this._displayNick = params;
+        this._addLine(`|15* |08(|14Notice|08) |07Server updated your nick to |15${params.replace(/_/g, ' ')}|07.`, true);
+        break;
+
+      case 'USERLIST': {
+        const list = params.split(',').map(s => s.trim().replace(/_/g, ' ')).filter(Boolean);
+        this._chatters = list;
+        
+        if (this._printNextUserlist) {
+          this._printNextUserlist = false;
+          if (list.length > 0) {
+             this._addLine(`|11* Users here: |14${list.join(', ')}`, false);
+          } else {
+             this._addLine(`|11* You are alone in this room.`, false);
+          }
+        }
+        break;
+      }
+
+      case 'TERMINATE':
+        this._addLine(`|12* SERVER: ${params}`, true);
+        this._inChat = false;
+        if (this._quitChat) this._quitChat();
+        break;
+
+      case 'BANNER': case 'NOTIFY':
+        this._addLine(`|14* |13<|15!|13> |15${params}`, false);
+        break;
+
+      case 'LATENCY': case 'STATS': case 'PONG': case 'PING':
+        break; // Ignore telemetry noise
+
+      default:
+        // Generic server broadcasts
+        if (!toUser || toUser.toLowerCase() === this._displayNick.toLowerCase() || toUser.toUpperCase() === 'CLIENT') {
+          this._addLine(body, false);
+        }
+        break;
+    }
+  }
+
+  _handleCtcp(body, toUser, fromUser) {
+    if (!body.startsWith('[CTCP] ')) return;
+    if (toUser && toUser.toLowerCase() !== this._displayNick.replace(/_/g, ' ').toLowerCase()) return;
+
+    const payload = body.substring(7);
+    const parts   = payload.split(' ');
+    const ctcpCmd = parts[0];
+
+    let reply = '';
+    switch (ctcpCmd) {
+      case 'VERSION':
+        reply = `VERSION ${CLIENT_NAME} v${PROTOCOL_VERSION}.${CLIENT_VERSION} [SynthDoor]`;
+        break;
+      case 'TIME':
+        reply = `TIME ${new Date().toLocaleString()}`;
+        break;
+      case 'PING':
+        reply = `PING ${parts.slice(1).join(' ')}`;
+        break;
+      case 'CLIENTINFO':
+        reply = 'CLIENTINFO VERSION TIME PING CLIENTINFO';
+        break;
+      default:
+        reply = `Unsupported CTCP: ${ctcpCmd}`;
+        break;
+    }
+    this._sendPacket(this._displayNick, this._fromSite, CTCP_ROOM,
+      fromUser.replace(/\s/g, '_'), '', CTCP_ROOM, `[CTCP-REPLY] ${reply}`);
+  }
+
+  /**
+   * Print a line to the terminal.
+   * Interrupts the active input line, prints the chat line, and repaints input.
+   */
+  _addLine(text, mention) {
+    const lines = wordWrap(text, 78);
+    
+    // Erase the current input line first
+    this.terminal.writeRaw('\r\x1b[K');
+
+    for (const l of lines) {
+      if (mention) {
+        this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
+        this.terminal.print('\xfe ');
+      }
+      printPipe(this.terminal, l);
+      this.terminal.println('');
+    }
+    
+    if (mention) {
+      this._mentions.push(text);
+      if (this._mentions.length > 50) this._mentions.shift();
+    }
+
+    // Immediately restore input line
+    if (this._inChat) {
+      this._redrawInput();
+    }
+  }
+
+  _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+}
+
+module.exports = MrcChat;

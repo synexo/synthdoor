@@ -137,16 +137,6 @@ export class TelnetFilter {
    Fix: _dispatchCSI returns true when it sets a new state that must not
    be overwritten.  The CSI branch only resets to NORMAL when false is
    returned.
-
-   BUG FIX: 0x0E (♫) and 0x0F (☼) silently dropped
-   ==================================================
-   The original code had:
-     case 0x0E: case 0x0F: return; // charset switch — ignore
-   These are valid CP437 glyphs (♫ and ☼) and have no control-code
-   meaning in this protocol. They are now allowed to fall through to
-   putChar. Bytes 0x07–0x0D remain as control codes because they are
-   legitimately used by scroll-mode output (CR, LF) and readline echo
-   (backspace, tab).
    ═══════════════════════════════════════════════════════════════ */
 export class ANSIParser {
   constructor(terminal) {
@@ -208,13 +198,10 @@ export class ANSIParser {
       case 0x09: t.tab(); return;
       case 0x0A: case 0x0B: case 0x0C: t.lineFeed(); return;
       case 0x0D: t.carriageReturn(); return;
-      // 0x0E (♫) and 0x0F (☼): no case here — fall through to putChar below.
-      // These are valid CP437 glyphs with no control-code meaning in this
-      // protocol. The original silent-drop was the bug.
+      case 0x0E: case 0x0F: return; // charset switch — ignore
     }
 
-    // CP437 printable bytes 0x01-0x1F (including 0x0E ♫ and 0x0F ☼ which
-    // were not caught by the switch above), plus all bytes 0x20-0xFF.
+    // CP437 printable bytes 0x01-0x1F are valid glyphs (smileys, suits, etc.)
     if (b>0x00&&b<0x20) { t.putChar(b); return; }
     if (b>=0x20) t.putChar(b);
   }

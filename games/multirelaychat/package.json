@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-mrc-chat",
+  "version": "1.0.0",
+  "description": "MRC Multi-Relay Chat client door for SynthDoor",
+  "main": "src/index.js",
+  "license": "MIT"
+}

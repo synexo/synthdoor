@@ -12,34 +12,54 @@ columns: 1
 
 selections:
   - key: "1"
+    text: "BBS Directory & Client"
+    type: game
+    target: bbs-client
+  - key: "2"
     text: "Daily Horoscope"
     type: game
     target: daily-horoscope
-  - key: "2"
+  - key: "3"
     text: "The Europa Trail"
     type: game
     target: europa-trail
-  - key: "3"
+  - key: "4"
+    text: "Gemini Browser"
+    type: game
+    target: gemini-browser
+  - key: "5"
     text: "Gopher Browser"
     type: game
     target: gopher-browser
-  - key: "4"
+  - key: "6"
+    text: "IMG2ANSI"
+    type: game
+    target: img2ansi
+  - key: "7"
     text: "METEOROID"
     type: game
     target: meteoroid
-  - key: "5"
+  - key: "8"
+    text: "MRC Chat"
+    type: game
+    target: mrc-chat
+  - key: "9"
     text: "Teleconference"
     type: game
     target: teleconference
-  - key: "6"
+  - key: "A"
     text: "TETROMINO"
     type: game
     target: tetromino
-  - key: "7"
+  - key: "B"
     text: "TRIANGULUM"
     type: game
     target: triangulum
-  - key: "8"
+  - key: "C"
+    text: "Usurper Reborn"
+    type: game
+    target: usurper-reborn
+  - key: "D"
     text: "Wikipedia Scroll"
     type: game
     target: wikipedia-scroll
