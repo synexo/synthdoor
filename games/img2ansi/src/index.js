@@ -1,7 +1,8 @@
 'use strict';
 
-const path = require('path');
-const fs   = require('fs');
+const path   = require('path');
+const fs     = require('fs');
+const crypto = require('crypto');
 
 const { GameBase, Screen, Draw, Color, Attr, CP437 } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'index.js')
@@ -16,12 +17,16 @@ const Utils = require(
 const SPLASH_ANS_PATH  = path.join(__dirname, '..', 'art', 'splash.ans');
 const BASE_OUTPUT_DIR  = path.join(__dirname, '..', 'output');
 const BASE_DATA_DIR    = path.join(__dirname, '..', 'data');
+const BBS_GALLERY_PATH = path.join(__dirname, '..', 'bbs-gallery.json');
+const BBS_CACHE_DIR    = path.join(__dirname, '..', 'cache', 'bbs');
+const USER_CACHE_BASE  = path.join(__dirname, '..', 'cache', 'users');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCREENSAVER CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const SCREENSAVER_MIN_MS = 5000;   // min ms before switching to next URL
-const SCREENSAVER_MAX_MS = 10000;  // max ms before switching to next URL
+const SCREENSAVER_MIN_MS      = 5000;   // min ms before switching to next URL
+const SCREENSAVER_MAX_MS      = 10000;  // max ms before switching to next URL
+const CACHE_MAX_USER_ENTRIES  = 100;    // max cached images per user (LRU eviction)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYOUT
@@ -307,9 +312,20 @@ const CGA_OKLAB = CGA_RGB.map(rgbToOklab);
 // ─────────────────────────────────────────────────────────────────────────────
 // IMAGE LOADING
 // ─────────────────────────────────────────────────────────────────────────────
-async function loadImageFromUrl(url) {
-  // Dynamic import of Jimp — must be installed at synthdoor root level
-  // npm install jimp  (run from synthdoor/ directory)
+// URL → deterministic cache filename (md5 hex)
+function urlCacheHash(url) {
+  return crypto.createHash('md5').update(url).digest('hex');
+}
+
+function urlCacheFile(cacheDir, url) {
+  return path.join(cacheDir, urlCacheHash(url) + '.imgcache');
+}
+
+// Load image from cache if available, otherwise fetch and cache.
+// cacheDir: directory to use for this image's cache (BBS or user-specific)
+// onCached(hash, url, byteLength): called after a successful network fetch+cache write
+// onCacheHit(hash): called after a successful cache read (for LRU update)
+async function loadImageFromUrl(url, cacheDir, onCached, onCacheHit) {
   let Jimp;
   try {
     ({ Jimp } = require('jimp'));
@@ -317,12 +333,31 @@ async function loadImageFromUrl(url) {
     throw new Error('Jimp not installed. Run: npm install jimp (from synthdoor root)');
   }
 
+  // Check cache first
+  if (cacheDir) {
+    const cf = urlCacheFile(cacheDir, url);
+    if (fs.existsSync(cf)) {
+      const buf = fs.readFileSync(cf);
+      if (onCacheHit) onCacheHit(urlCacheHash(url));
+      return await Jimp.fromBuffer(buf);
+    }
+  }
+
+  // Fetch from network
   const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching image`);
   const buf = Buffer.from(await res.arrayBuffer());
 
-  const img = await Jimp.fromBuffer(buf);
-  return img;  // Jimp image object
+  // Write to cache
+  if (cacheDir) {
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(urlCacheFile(cacheDir, url), buf);
+      if (onCached) onCached(urlCacheHash(url), url, buf.length);
+    } catch { /* cache write failure is non-fatal */ }
+  }
+
+  return await Jimp.fromBuffer(buf);
 }
 
 // Extract RGBA pixel data from Jimp image as flat Uint8Array [r,g,b,a, r,g,b,a ...]
@@ -750,7 +785,7 @@ class Img2Ansi extends GameBase {
       if (!startResult) { keepRunning = false; break; }
 
       if (startResult.action === 'screensaver') {
-        const ssUrl = await this._runScreensaver(startResult.urls);
+        const ssUrl = await this._runScreensaver(startResult.urls, startResult.isBbs);
         if (ssUrl) {
           // Screensaver stopped on a live image — drop into main loop on it
           await this._mainLoop(ssUrl);
@@ -916,7 +951,12 @@ class Img2Ansi extends GameBase {
     await this._showLoading('Fetching image...');
 
     try {
-      this._jimpImg = await loadImageFromUrl(url);
+      this._jimpImg = await loadImageFromUrl(
+        url,
+        this._userCacheDir(),
+        (h, u, b) => this._onUserCached(h, u, b),
+        (h)       => this._onUserCacheHit(h)
+      );
       this._loadError = '';
     } catch (err) {
       this._loadError = err.message;
@@ -2041,9 +2081,46 @@ class Img2Ansi extends GameBase {
   _loadUserData() {
     try {
       const p = this._userDataPath();
-      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (fs.existsSync(p)) {
+        const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (!d.cache) d.cache = [];
+        return d;
+      }
     } catch {}
-    return { savedUrls: [], savedFiles: [] };
+    return { savedUrls: [], savedFiles: [], cache: [] };
+  }
+
+  // Cache helpers — used by loadImageFromUrl callbacks
+  _userCacheDir() {
+    return path.join(USER_CACHE_BASE, this.username || 'guest');
+  }
+
+  _onUserCached(hash, url, byteLength) {
+    const ud = this._loadUserData();
+    // Remove existing entry for same hash if any
+    ud.cache = ud.cache.filter(e => e.hash !== hash);
+    ud.cache.push({ hash, url, lastUsed: new Date().toISOString(), bytes: byteLength });
+    // LRU eviction: if over limit, remove oldest entries from disk and metadata
+    if (ud.cache.length > CACHE_MAX_USER_ENTRIES) {
+      ud.cache.sort((a, b) => new Date(a.lastUsed) - new Date(b.lastUsed));
+      const toEvict = ud.cache.splice(0, ud.cache.length - CACHE_MAX_USER_ENTRIES);
+      for (const e of toEvict) {
+        try {
+          const cf = path.join(this._userCacheDir(), e.hash + '.imgcache');
+          if (fs.existsSync(cf)) fs.unlinkSync(cf);
+        } catch {}
+      }
+    }
+    this._saveUserData(ud);
+  }
+
+  _onUserCacheHit(hash) {
+    const ud = this._loadUserData();
+    const entry = ud.cache.find(e => e.hash === hash);
+    if (entry) {
+      entry.lastUsed = new Date().toISOString();
+      this._saveUserData(ud);
+    }
   }
 
   _saveUserData(data) {
@@ -2053,42 +2130,62 @@ class Img2Ansi extends GameBase {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // BBS GALLERY HELPER
+  // ═══════════════════════════════════════════════════════════════════════════
+  _loadBbsGallery() {
+    try {
+      if (fs.existsSync(BBS_GALLERY_PATH)) {
+        // Strip trailing commas before closing brackets/braces (common JSON5-style mistake)
+        let raw = fs.readFileSync(BBS_GALLERY_PATH, 'utf8');
+        raw = raw.replace(/,\s*([\]}])/g, '$1');
+        const d = JSON.parse(raw);
+        return Array.isArray(d.urls) ? d.urls : [];
+      }
+    } catch (e) {
+      // Log to stderr so sysop can diagnose bbs-gallery.json parse errors
+      process.stderr.write(`[img2ansi] bbs-gallery.json parse error: ${e.message}\n`);
+    }
+    return [];
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // START SCREEN
-  // Returns: { action:'url', url } | { action:'screensaver', urls } | null (quit)
+  // Returns: { action:'url', url } | { action:'screensaver', urls, isBbs } | null
   // ═══════════════════════════════════════════════════════════════════════════
   async _startScreen() {
-    const ud = this._loadUserData();
-    const hasData = ud.savedUrls.length > 0 || ud.savedFiles.length > 0;
+    const ud      = this._loadUserData();
+    const bbsUrls = this._loadBbsGallery();
+    const hasAny  = bbsUrls.length > 0 || ud.savedUrls.length > 0 || ud.savedFiles.length > 0;
 
-    if (!hasData) {
-      // No saved data — go straight to URL entry
+    if (!hasAny) {
       const url = await this._urlEntryScreen();
       return url ? { action: 'url', url } : null;
     }
 
-    // Welcome screen
     this.screen.setMode(Screen.FIXED);
     this.screen.clear(Color.BLACK, Color.BLACK);
     Draw.titleBar(this.screen, ' IMG2ANSI  \u00b7  Welcome Back', Color.BRIGHT_WHITE, Color.BLUE);
 
     const uname = this.username || 'guest';
     this.screen.putString(3, 5, `Welcome back, ${uname}!`, Color.BRIGHT_CYAN, Color.BLACK);
-    this.screen.putString(3, 7, `You have ${ud.savedUrls.length} saved URL(s) and ${ud.savedFiles.length} saved file(s).`, Color.WHITE, Color.BLACK);
+    this.screen.putString(3, 7,
+      `BBS Gallery: ${bbsUrls.length}  |  My URLs: ${ud.savedUrls.length}  |  My Files: ${ud.savedFiles.length}`,
+      Color.WHITE, Color.BLACK);
 
     this.screen.putString(3, 10, 'N', Color.BRIGHT_YELLOW, Color.BLACK);
     this.screen.putString(5, 10, 'New URL  \u2014  Enter a new image URL', Color.WHITE, Color.BLACK);
     this.screen.putString(3, 12, 'L', Color.BRIGHT_YELLOW, Color.BLACK);
-    this.screen.putString(5, 12, 'Load     \u2014  Load a saved URL or file', Color.WHITE, Color.BLACK);
+    this.screen.putString(5, 12, 'Load     \u2014  Browse gallery and saved items', Color.WHITE, Color.BLACK);
     this.screen.putString(3, 14, 'Q', Color.BRIGHT_YELLOW, Color.BLACK);
     this.screen.putString(5, 14, 'Quit', Color.WHITE, Color.BLACK);
 
-    this.screen.statusBar(' N=New URL  L=Load Saved  Q=Quit', Color.BLACK, Color.CYAN);
+    this.screen.statusBar(' N=New URL  L=Load / Gallery  Q=Quit', Color.BLACK, Color.CYAN);
     this.screen.flush();
 
     const choice = await new Promise((resolve) => {
       const cleanup = () => this.terminal.removeListener('key', onKey);
       const onKey = (key) => {
-        const k = (key.toLowerCase ? key.toLowerCase() : key);
+        const k = key.toLowerCase ? key.toLowerCase() : key;
         if (k === 'n') { cleanup(); resolve('new'); }
         else if (k === 'l') { cleanup(); resolve('load'); }
         else if (k === 'q' || key === '\x1b') { cleanup(); resolve('quit'); }
@@ -2102,37 +2199,39 @@ class Img2Ansi extends GameBase {
       return url ? { action: 'url', url } : null;
     }
 
-    // Load screen
-    return await this._loadScreen(ud);
+    return await this._loadScreen(ud, bbsUrls);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // LOAD SCREEN — two-tab: URLs / Files
-  // Returns: { action:'url', url } | { action:'screensaver', urls } | null
+  // LOAD SCREEN — three tabs: BBS Gallery / My URLs / My Files
+  // Returns: { action:'url', url, isBbs? } | { action:'screensaver', urls, isBbs } | null
   // ═══════════════════════════════════════════════════════════════════════════
-  async _loadScreen(ud) {
-    const MAX_VISIBLE = 16;  // list rows visible at once
-    const LIST_ROW    = 5;   // first row of list on screen
+  async _loadScreen(ud, bbsUrls) {
+    const MAX_VISIBLE = 16;
+    const LIST_ROW    = 5;
     const LIST_COL    = 3;
 
-    let tab     = 0;  // 0=URLs, 1=Files
-    let selIdx  = [0, 0];
-    let scrollY = [0, 0];
+    // Tab 0=BBS Gallery, 1=My URLs, 2=My Files
+    let tab     = 0;
+    let selIdx  = [0, 0, 0];
+    let scrollY = [0, 0, 0];
 
-    const lists = [ud.savedUrls, ud.savedFiles];
-    const tabNames = ['SAVED URLs', 'SAVED FILES'];
+    // Tab 0 items have { name, url } only. Tab 1 { name, url, settings }. Tab 2 { filename, url, settings }.
+    const lists     = [bbsUrls, ud.savedUrls, ud.savedFiles];
+    const tabLabels = ['BBS GALLERY', 'MY URLs', 'MY FILES'];
+    // Tab col start positions (roughly spaced across ~60 chars)
+    const tabCols   = [3, 18, 29];
 
     const draw = () => {
       this.screen.clear(Color.BLACK, Color.BLACK);
       Draw.titleBar(this.screen, ' IMG2ANSI  \u00b7  Load', Color.BRIGHT_WHITE, Color.BLUE);
 
       // Tab headers
-      for (let t = 0; t < 2; t++) {
-        const label = `  ${tabNames[t]}  `;
-        const col   = t === 0 ? 3 : 3 + tabNames[0].length + 6;
+      for (let t = 0; t < 3; t++) {
+        const label = ` ${tabLabels[t]} `;
         const fg    = t === tab ? Color.BRIGHT_WHITE : Color.DARK_GRAY;
         const bg    = t === tab ? Color.BLUE         : Color.BLACK;
-        this.screen.putString(col, 3, label, fg, bg);
+        this.screen.putString(tabCols[t], 3, label, fg, bg);
       }
 
       const list = lists[tab];
@@ -2140,34 +2239,39 @@ class Img2Ansi extends GameBase {
       const sy   = scrollY[tab];
 
       if (list.length === 0) {
-        this.screen.putString(LIST_COL, LIST_ROW + 2, '(none saved)', Color.DARK_GRAY, Color.BLACK);
+        const emptyMsg = tab === 0 ? '(No BBS gallery entries — edit bbs-gallery.json)'
+                       : tab === 1 ? '(No saved URLs — use S from main screen)'
+                       :             '(No saved files)';
+        this.screen.putString(LIST_COL, LIST_ROW + 2, emptyMsg, Color.DARK_GRAY, Color.BLACK);
       } else {
         const visible = Math.min(MAX_VISIBLE, list.length);
         for (let i = 0; i < visible; i++) {
-          const idx   = sy + i;
+          const idx  = sy + i;
           if (idx >= list.length) break;
-          const item  = list[idx];
-          const label = tab === 0 ? item.name : item.filename;
-          const isSelected = idx === si;
-          const fg    = isSelected ? Color.BLACK : Color.WHITE;
-          const bg    = isSelected ? Color.CYAN  : Color.BLACK;
-          const prefix = isSelected ? '> ' : '  ';
-          this.screen.putString(LIST_COL, LIST_ROW + i, (prefix + label).substring(0, 76).padEnd(76), fg, bg);
+          const item = list[idx];
+          const label = tab === 2 ? item.filename : item.name;
+          const isSel = idx === si;
+          const fg    = isSel ? Color.BLACK : Color.WHITE;
+          const bg    = isSel ? Color.CYAN  : Color.BLACK;
+          this.screen.putString(LIST_COL, LIST_ROW + i,
+            ((isSel ? '> ' : '  ') + label).substring(0, 76).padEnd(76), fg, bg);
         }
         // Scroll indicators
         if (sy > 0)
           this.screen.putString(78, LIST_ROW, '\u2191', Color.BRIGHT_YELLOW, Color.BLACK);
         if (sy + MAX_VISIBLE < list.length)
           this.screen.putString(78, LIST_ROW + Math.min(MAX_VISIBLE, list.length) - 1, '\u2193', Color.BRIGHT_YELLOW, Color.BLACK);
-        // Show URL of selected item (if URLs tab)
-        if (tab === 0 && list[si]) {
-          const urlPreview = list[si].url.substring(0, 74);
-          this.screen.putString(3, LIST_ROW + MAX_VISIBLE + 1, urlPreview, Color.DARK_GRAY, Color.BLACK);
+        // URL preview for BBS/MyURLs tabs
+        if (tab < 2 && list[si]) {
+          const urlPrev = (list[si].url || '').substring(0, 74);
+          this.screen.putString(LIST_COL, LIST_ROW + MAX_VISIBLE + 1, urlPrev, Color.DARK_GRAY, Color.BLACK);
         }
       }
 
-      // Status bar
+      // Status bar differs by tab
       const sBar = tab === 0
+        ? ' Tab=Switch  \u2191\u2193=Select  Enter=Load  S=Screensaver  Q=Back'
+        : tab === 1
         ? ' Tab=Switch  \u2191\u2193=Select  Enter=Load  S=Screensaver  D=Delete  Q=Back'
         : ' Tab=Switch  \u2191\u2193=Select  Enter=View  D=Delete  Q=Back';
       this.screen.statusBar(sBar, Color.BLACK, Color.CYAN);
@@ -2184,7 +2288,6 @@ class Img2Ansi extends GameBase {
 
       const onAction = (action) => {
         const list = lists[tab];
-        const maxIdx = Math.max(0, list.length - 1);
         if (action === 'UP') {
           if (selIdx[tab] > 0) {
             selIdx[tab]--;
@@ -2192,7 +2295,7 @@ class Img2Ansi extends GameBase {
             draw();
           }
         } else if (action === 'DOWN') {
-          if (selIdx[tab] < maxIdx) {
+          if (selIdx[tab] < Math.max(0, list.length - 1)) {
             selIdx[tab]++;
             if (selIdx[tab] >= scrollY[tab] + MAX_VISIBLE) scrollY[tab] = selIdx[tab] - MAX_VISIBLE + 1;
             draw();
@@ -2201,44 +2304,49 @@ class Img2Ansi extends GameBase {
       };
 
       const onKey = (key) => {
-        const k = key.toLowerCase ? key.toLowerCase() : key;
+        const k    = key.toLowerCase ? key.toLowerCase() : key;
         const list = lists[tab];
-        const si = selIdx[tab];
+        const si   = selIdx[tab];
 
         if (key === '\t') {
-          // Switch tab
-          tab = 1 - tab;
+          tab = (tab + 1) % 3;
           draw();
         } else if (k === 'q' || key === '\x1b') {
           cleanup(); resolve(null);
         } else if (key === '\r') {
           if (list.length === 0) return;
           const item = list[si];
-          if (tab === 0) {
-            // Load URL — also restore saved settings if present
-            if (item.settings) this._applySettings(item.settings);
-            cleanup(); resolve({ action: 'url', url: item.url });
-          } else {
+          if (tab === 2) {
             // View saved ANS file
             cleanup();
             this._viewSavedFile(item, ud).then(resolve);
-          }
-        } else if (k === 's' && tab === 0) {
-          // Screensaver — available with any number of URLs >= 1
-          if (ud.savedUrls.length >= 1) {
+          } else {
+            // Load URL (BBS or user)
+            if (item.settings) this._applySettings(item.settings);
             cleanup();
-            resolve({ action: 'screensaver', urls: ud.savedUrls.map(u => u.url) });
+            resolve({ action: 'url', url: item.url, isBbs: tab === 0 });
           }
-        } else if (k === 'd') {
-          // Delete selected entry
+        } else if (k === 's' && tab < 2) {
+          // Screensaver — tabs 0 and 1 only, need at least 1 entry
+          if (list.length >= 1) {
+            cleanup();
+            resolve({
+              action: 'screensaver',
+              urls:   list.map(u => u.url),
+              isBbs:  tab === 0,
+            });
+          }
+        } else if (k === 'd' && tab > 0) {
+          // Delete — not available on BBS Gallery tab
           if (list.length === 0) return;
-          this._confirmDelete(ud, tab, si).then((newUd) => {
+          this._confirmDelete(ud, tab - 1, si).then((newUd) => {
             if (newUd) {
               ud.savedUrls  = newUd.savedUrls;
               ud.savedFiles = newUd.savedFiles;
-              lists[0] = ud.savedUrls;
-              lists[1] = ud.savedFiles;
-              if (selIdx[tab] >= lists[tab].length) selIdx[tab] = Math.max(0, lists[tab].length - 1);
+              lists[1] = ud.savedUrls;
+              lists[2] = ud.savedFiles;
+              if (selIdx[tab] >= lists[tab].length)
+                selIdx[tab] = Math.max(0, lists[tab].length - 1);
             }
             draw();
           });
@@ -2249,7 +2357,6 @@ class Img2Ansi extends GameBase {
       this.terminal.on('key', onKey);
     });
   }
-
   // ── View a saved ANS file ──────────────────────────────────────────────────
   // Uses SCROLL mode so the image scrolls naturally in the terminal buffer.
   // Wide files (>80 cols) are displayed clipped to the centre 80 columns.
@@ -2372,8 +2479,13 @@ class Img2Ansi extends GameBase {
   // Shuffle-and-cycle through saved URLs with automate + autovary.
   // Any keypress stops screensaver but leaves image on screen (cancel auto modes).
   // ═══════════════════════════════════════════════════════════════════════════
-  async _runScreensaver(urls) {
+  async _runScreensaver(urls, isBbs) {
     this._screensaver = true;
+
+    // For cache routing: isBbs means use BBS_CACHE_DIR permanently
+    const cacheDir  = isBbs ? BBS_CACHE_DIR : this._userCacheDir();
+    const onCached  = isBbs ? null : (h, u, b) => this._onUserCached(h, u, b);
+    const onCacheHit = isBbs ? null : (h) => this._onUserCacheHit(h);
 
     // Build shuffled cycle list
     const shuffled = [...urls].sort(() => Math.random() - 0.5);
@@ -2390,7 +2502,7 @@ class Img2Ansi extends GameBase {
 
       // Load silently — no loading screen between images
       try {
-        const nextImg  = await loadImageFromUrl(url);
+        const nextImg  = await loadImageFromUrl(url, cacheDir, onCached, onCacheHit);
         this._jimpImg  = nextImg;
         this._imageUrl = url;
         this._loadError = '';

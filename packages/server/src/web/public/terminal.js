@@ -119,8 +119,7 @@ export class TelnetFilter {
     if (out.length>0&&this.onData) this.onData(new Uint8Array(out));
   }
   _handleCmd(verb,opt) {
-    if (opt===0x1F&&verb===0xFD) this._send(new Uint8Array([0xFF,0xFB,0x1F]));
-    else if (verb===0xFD) this._send(new Uint8Array([0xFF,0xFC,opt]));
+    if (verb===0xFD) this._send(new Uint8Array([0xFF,0xFC,opt]));
     else if (verb===0xFB) this._send(new Uint8Array([0xFF,0xFE,opt]));
   }
   _send(b) { if (this.onSend) this.onSend(b); }
@@ -284,7 +283,6 @@ export class Terminal {
     this.fgColor=7; this.bgColor=0;
     this.bold=false; this.blink=false;
     this._scrollTop=0; this._scrollBottom=rows-1;
-    this.iceColors=false;
     this.cursorVisible=true;
     this._autoWrap=true;
     this._insertMode=false;

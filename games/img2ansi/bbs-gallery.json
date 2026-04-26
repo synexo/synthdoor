@@ -1,0 +1,18 @@
+{
+  "title": "SynthDoor Image Gallery",
+  "description": "BBS-curated image list for screensaver and shared viewing. Edit this file to add/remove entries. URLs only \u2014 no per-user settings are saved against these entries.",
+  "urls": [
+    {
+      "name": "Neon Fashion",
+      "url": "https://img.freepik.com/premium-vector/fashion-girl-beautiful-young-woman-with-colorful-neon-makeup-lights_912214-124383.jpg"
+    },
+    {
+      "name": "Planets",
+      "url": "https://t3.ftcdn.net/jpg/01/93/13/54/360_F_193135491_La4vpQjhnLojIZB1AERxh4Tu9RL0YdHj.jpg"
+    },
+    {
+      "name": "Eleven",
+      "url": "https://images3.alphacoders.com/101/thumb-1920-1017431.jpg"
+    }
+  ]
+}

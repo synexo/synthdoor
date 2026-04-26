@@ -43,17 +43,6 @@ window.SYNTHDOOR_CONFIG = {
   // Number of lines to keep in the scrollback buffer.
   SCROLLBACK: 5000,
 
-  // ── iCE colours ─────────────────────────────────────────────────
-  // iCE mode: when true, all 16 colours can be used as backgrounds
-  // (the blink attribute is repurposed for bright backgrounds).
-  // When false (default), background colours are limited to 0-7 and
-  // the blink attribute makes text flash.
-  ICECOLORS: false,
-
-  // Show the iCE toggle button in the title bar.
-  // If false the button is hidden and ICECOLORS above is fixed.
-  SHOWICEBTN: false,
-
   // ── Canvas scaling ──────────────────────────────────────────────
   // How the terminal canvas is scaled to fill the browser window.
   //
@@ -112,11 +101,11 @@ window.SYNTHDOOR_CONFIG = {
     <span class="sep">|</span>
     <span id="server-label">—</span>
     <div class="spacer"></div>
+    <button id="btn-fullscreen">FULLSCREEN</button>
     <button id="btn-scale">SCALE: CLOSE</button>
     <button id="btn-render">RENDER: PIXEL</button>
     <button id="btn-connect">CONNECT</button>
     <button id="btn-disconnect" style="display:none">DISCONNECT</button>
-    <button id="btn-ice" style="display:none">iCE: BLINK</button>
     <button id="btn-music">♪ MUSIC: ON</button>
   </div>
 
@@ -175,15 +164,6 @@ window.SYNTHDOOR_CONFIG = {
     <div class="field">
       <label for="ws-url">WEBSOCKET URL</label>
       <input id="ws-url" type="text" placeholder="ws://host:port" spellcheck="false">
-    </div>
-
-    <div class="field">
-      <label for="term-size">TERMINAL SIZE</label>
-      <select id="term-size">
-        <option value="80x25">80 × 25  (standard)</option>
-        <option value="80x50">80 × 50  (tall)</option>
-        <option value="132x37">132 × 37  (wide)</option>
-      </select>
     </div>
 
     <div class="modal-actions">

@@ -75,12 +75,11 @@ export class Renderer {
    * @param {number}  cursorRow
    * @param {boolean} cursorVisible
    * @param {boolean} cursorOn      blink phase
-   * @param {boolean} iceColors
    * @param {boolean} blinkPhase
    * @param {object|null} selection { start:[r,c], end:[r,c] }
    */
   drawFrame(cells, cursorCol, cursorRow, cursorVisible, cursorOn,
-            iceColors, blinkPhase, selection) {
+            blinkPhase, selection) {
     if (!this._built) return;
     const { ctx, cols, rows } = this;
 
@@ -109,7 +108,7 @@ export class Renderer {
         let fg = cell.fg & 15;
         let bg = cell.bg & 15;
         if (cell.bold) fg = (fg | 8) & 15;
-        if (!iceColors && cell.blink && !blinkPhase) fg = bg; // blink-off
+        if (cell.blink && !blinkPhase) fg = bg; // blink-off
 
         const pack = cell.ch | (fg << 8) | (bg << 12);
         if (!force[idx] && !cell.dirty && this._lastDrawn[idx] === pack) continue;

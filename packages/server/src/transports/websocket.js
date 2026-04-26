@@ -8,13 +8,12 @@
  * Accepts WebSocket connections and talks directly to the engine,
  * eliminating the intermediate TCP connection.
  *
- * This transport runs TelnetFilterStream on incoming data and 
- * sends the IAC NEGOTIATE sequence to the client on connect.
+ * This transport runs TelnetFilterStream on incoming data and sends a
+ * minimal Telnet negotiation (WILL ECHO, WILL SGA) to the client on
+ * connect to establish full-duplex mode.  NAWS and TTYPE are omitted
+ * because the web client is fixed at 80×25 and reports no terminal type.
  *
- * Sub-protocol support:
- *   'binary'  — ArrayBuffer frames  (preferred, fastest)
- *   'base64'  — base64-encoded text frames
- *   'plain'   — UTF-8 / binary text frames (fallback)
+ * Binary WebSocket frames (ArrayBuffer) are used exclusively.
  *
  * Static file serving is also handled directly.
  *
@@ -32,7 +31,16 @@ const { Writable, Readable } = require('stream');
 const { Terminal } = require(
   path.join(__dirname, '..', '..', '..', 'engine', 'src', 'index.js')
 );
-const { NEGOTIATE, TelnetFilterStream, sleep } = require('./telnet-filter');
+const { TelnetFilterStream, sleep } = require('./telnet-filter');
+
+// Minimal Telnet negotiation for browser clients:
+//   IAC WILL ECHO  — server echoes (client must not local-echo)
+//   IAC WILL SGA   — suppress go-ahead (full-duplex mode)
+// NAWS and TTYPE are intentionally omitted: the web client is fixed at
+// 80×25 and does not report a terminal type.
+const IAC  = 255;
+const WILL = 251;
+const WS_NEGOTIATE = Buffer.from([IAC, WILL, 1, IAC, WILL, 3]);
 const { runSession } = require('../session');
 
 // ─── MIME types for static file serving ──────────────────────────────────
@@ -75,16 +83,7 @@ class WebSocketTransport {
       this._handleHttp(req, res, publicDir);
     });
 
-    this._wss = new WebSocketServer({
-      server: this._server,
-      handleProtocols: (protocols) => {
-        // Prefer binary, then base64, then plain
-        for (const p of ['binary', 'base64', 'plain']) {
-          if (protocols.has(p)) return p;
-        }
-        return false;
-      },
-    });
+    this._wss = new WebSocketServer({ server: this._server });
 
     this._wss.on('connection', (ws, req) => {
       this._handleConnection(ws, req).catch(err => {
@@ -141,9 +140,8 @@ class WebSocketTransport {
 
   async _handleConnection(ws, req) {
     const remoteIP = req.socket?.remoteAddress || 'unknown';
-    const protocol = ws.protocol || 'plain';
 
-    console.log(`[WebSocket] ${remoteIP} connected [${protocol}]`);
+    console.log(`[WebSocket] ${remoteIP} connected`);
 
     const maxIdleMs = this.config.getInt('web_max_idle_minutes', 10) * 60 * 1000;
     let lastActivity = Date.now();
@@ -152,7 +150,7 @@ class WebSocketTransport {
     const idleTimer = setInterval(() => {
       if (Date.now() - lastActivity > maxIdleMs) {
         console.log(`[WebSocket] Idle timeout: ${remoteIP}`);
-        try { ws.send(_encode('\r\nIdle timeout — disconnecting.\r\n', protocol)); } catch (_) {}
+        try { ws.send(Buffer.from('\r\nIdle timeout — disconnecting.\r\n', 'latin1')); } catch (_) {}
         ws.close();
       }
     }, 30000);
@@ -167,16 +165,13 @@ class WebSocketTransport {
     });
 
     // ── Writable adapter: Terminal output → WebSocket ───────────────────────
-    // decodeStrings: false is critical — without it Node converts strings to
-    // UTF-8 Buffers before our write() handler sees them, corrupting CP437
-    // bytes 0x80-0xFF into two-byte sequences.  We handle encoding ourselves.
     const output = new Writable({
       decodeStrings: false,
       write(chunk, _encoding, callback) {
         lastActivity = Date.now();
         if (ws.readyState !== 1 /* OPEN */) { callback(); return; }
         try {
-          ws.send(_encode(chunk, protocol));
+          ws.send(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'latin1'));
         } catch (_) {}
         callback();
       },
@@ -190,7 +185,7 @@ class WebSocketTransport {
     ws.on('message', (data) => {
       lastActivity = Date.now();
       try {
-        rawInput.push(_decode(data, protocol));
+        rawInput.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
       } catch (_) {}
     });
 
@@ -200,9 +195,9 @@ class WebSocketTransport {
     rawInput.on('end',   ()    => filtered.end());
     rawInput.on('error', err   => filtered.emit('error', err));
 
-    // ── Send IAC negotiation ─────────────────────────────────────────────────
+    // ── Send Telnet negotiation ──────────────────────────────────────────────
     try {
-      ws.send(_encode(NEGOTIATE, protocol));
+      ws.send(WS_NEGOTIATE);
     } catch (_) {}
     await sleep(100);
 
@@ -232,42 +227,6 @@ class WebSocketTransport {
       try { ws.close(); } catch (_) {}
     }
   }
-}
-
-// ─── Sub-protocol encode/decode helpers ──────────────────────────────────
-
-/**
- * Encode outgoing bytes for the negotiated sub-protocol.
- *
- * IMPORTANT: Buffer.from(str) uses UTF-8 by default, which corrupts CP437
- * bytes 0x80-0xFF into two-byte sequences.  latin1 is a 1:1 byte mapping
- * and is the correct encoding for CP437/ANSI terminal data on the wire.
- *
- * @param {Buffer|string} chunk
- * @param {string} protocol  'binary' | 'base64' | 'plain'
- * @returns {Buffer|string}
- */
-function _encode(chunk, protocol) {
-  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'latin1');
-  if (protocol === 'binary') return buf;
-  if (protocol === 'base64') return buf.toString('base64');
-  return buf.toString('binary');
-}
-
-/**
- * Decode incoming WebSocket message bytes for the negotiated sub-protocol.
- * @param {Buffer|string} data
- * @param {string} protocol
- * @returns {Buffer}
- */
-function _decode(data, protocol) {
-  if (protocol === 'binary') {
-    return Buffer.isBuffer(data) ? data : Buffer.from(data);
-  }
-  if (protocol === 'base64') {
-    return Buffer.from(data.toString(), 'base64');
-  }
-  return Buffer.from(data.toString(), 'binary');
 }
 
 module.exports = WebSocketTransport;

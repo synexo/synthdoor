@@ -16,8 +16,6 @@ const CFG = Object.assign({
   AUTOCONNECT:       true,
   TERMSIZE:          '80x25',
   SCROLLBACK:        5000,
-  ICECOLORS:         false,
-  SHOWICEBTN:        false,
   SCALING:           'auto',
   SCALINGCAP:        3,
   IMAGERENDERING:    'pixelated',
@@ -64,7 +62,6 @@ export class App {
     });
     this._music = new ANSIMusic();
 
-    this._term.iceColors      = CFG.ICECOLORS;
     this._term.MAX_SCROLLBACK = CFG.SCROLLBACK;
 
     this._telnet.onData = (bytes) => {
@@ -120,10 +117,7 @@ export class App {
 
     document.getElementById('title-name').textContent = CFG.NAME;
     document.title = CFG.NAME + ' Terminal';
-    document.getElementById('btn-ice').style.display = CFG.SHOWICEBTN ? '' : 'none';
     document.getElementById('ws-url').value = resolveWsUrl(CFG.WSURL);
-    this._preselectSize(CFG.TERMSIZE);
-
     // Initialise toggle button labels
     this._updateScaleBtn();
     this._updateRenderBtn();
@@ -163,7 +157,6 @@ export class App {
           this._term.cx, this._term.cy,
           this._term.cursorVisible && this._term.isLive(),
           this._cursorOn,
-          this._term.iceColors,
           this._blinkPhase,
           sel
         );
@@ -244,7 +237,7 @@ export class App {
   // ── Welcome banner ────────────────────────────────────────────
   _showWelcome() {
     const name = CFG.NAME;
-    const header = ('  ' + name + ' TERMINAL EMULATOR  \xB7  CP437/ANSI/TELNET             ').slice(0, 78);
+    const header = ('  ' + name + ' TERMINAL EMULATOR  \xB7  CP437/ANSI                        ').slice(0, 78);
     const lines = [
       '\x1B[2J\x1B[H',
       '\x1B[1;34m\xC9' + '\xCD'.repeat(78) + '\xBB\r\n',
@@ -254,7 +247,7 @@ export class App {
       '\x1B[1;34m\xBA                                                                              \xBA\r\n',
       '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mBitmap VGA 8\xD716 ROM font \x96 authentic IBM CP437 glyphs                       \x1B[1;34m\xBA\r\n',
       '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mFull ANSI escape sequences: cursor, erase, SGR, scroll region               \x1B[1;34m\xBA\r\n',
-      '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mTelnet IAC negotiation (WILL/WONT/DO/DONT, NAWS)                           \x1B[1;34m\xBA\r\n',
+      '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mTelnet IAC negotiation (WILL ECHO, WILL SGA, WONT/DONT)                    \x1B[1;34m\xBA\r\n',
       '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mScrollback buffer \xB7 mouse selection \xB7 clipboard copy / right-click paste    \x1B[1;34m\xBA\r\n',
       '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mURL detection \xB7 iCE colours \xB7 ANSI music via Web Audio API                 \x1B[1;34m\xBA\r\n',
       '\x1B[1;34m\xBA\x1B[1;32m  \xFB \x1B[0;37mScrollbar \xB7 mouse click-to-type \xB7 mobile keyboard toolbar                   \x1B[1;34m\xBA\r\n',
@@ -379,18 +372,24 @@ export class App {
       this._conn.disconnect();
     });
 
-    document.getElementById('btn-ice').addEventListener('click', () => {
-      this._term.iceColors = !this._term.iceColors;
-      document.getElementById('btn-ice').textContent =
-        this._term.iceColors ? 'iCE: BRIGHT' : 'iCE: BLINK';
-      this._renderer.invalidateAll();
-      this._dirty = true;
-    });
-
     document.getElementById('btn-music').addEventListener('click', () => {
       this._music.enabled = !this._music.enabled;
       document.getElementById('btn-music').textContent =
         '\u266A MUSIC: ' + (this._music.enabled ? 'ON' : 'OFF');
+    });
+
+    document.getElementById('btn-fullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        document.documentElement.requestFullscreen();
+      }
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      document.getElementById('btn-fullscreen').textContent =
+        document.fullscreenElement ? 'EXIT FULL' : 'FULLSCREEN';
+      this._scaleCanvas();
     });
 
     // ── Scale toggle ─────────────────────────────────────────────
@@ -414,27 +413,6 @@ export class App {
     document.getElementById('ws-url').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._doConnect();
     });
-    document.getElementById('term-size').addEventListener('change', (e) => {
-      const [c, r] = e.target.value.split('x').map(Number);
-      if (c && r) {
-        this._cols = c; this._rows = r;
-        this._term.resize(c, r);
-        this._renderer.resize(c, r);
-        this._scaleCanvas();
-      }
-    });
-  }
-
-  _preselectSize(sizeStr) {
-    const sel = document.getElementById('term-size');
-    for (const opt of sel.options) {
-      if (opt.value === sizeStr) { opt.selected = true; return; }
-    }
-    const opt = document.createElement('option');
-    opt.value = sizeStr;
-    opt.text  = sizeStr.replace('x', ' × ') + '  (config)';
-    opt.selected = true;
-    sel.insertBefore(opt, sel.firstChild);
   }
 
   _showModal() {
@@ -449,15 +427,6 @@ export class App {
     this._hideModal();
     let url = document.getElementById('ws-url').value.trim();
     if (!url) url = resolveWsUrl(CFG.WSURL);
-
-    const sizeVal = document.getElementById('term-size').value;
-    const [c, r] = sizeVal.split('x').map(Number);
-    if (c && r && (c !== this._cols || r !== this._rows)) {
-      this._cols = c; this._rows = r;
-      this._term.resize(c, r);
-      this._renderer.resize(c, r);
-      this._scaleCanvas();
-    }
 
     this._term.reset();
     this._renderer.invalidateAll();
