@@ -4,11 +4,10 @@
  * Reads window.SYNTHDOOR_CONFIG (set in index.html) for all runtime options.
  */
 
-import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.js';
-import { Renderer, CHAR_W, CHAR_H }                  from './renderer.js';
-import { WSConnection }                               from './connection.js';
-import { ANSIMusic }                                  from './music.js';
-import { SBANSIDecoder }                              from './sbansi-decoder.js';
+import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.min.js';
+import { Renderer, CHAR_W, CHAR_H }                  from './renderer.min.js';
+import { WSConnection }                               from './connection.min.js';
+import { ANSIMusic }                                  from './music.min.js';
 
 // ── Config with defaults ──────────────────────────────────────────────────
 const CFG = Object.assign({
@@ -57,12 +56,6 @@ export class App {
     this._renderer = new Renderer(this._canvas, this._cols, this._rows);
     this._telnet   = new TelnetFilter();
     this._parser   = new ANSIParser(this._term);
-    // SBANSI binary decoder for the WebSocket transport. The encoder
-    // (server-side) compresses the ANSI/CP437 byte stream into binary
-    // opcodes; the decoder reverses that transformation byte-for-byte
-    // and feeds the resulting ANSI bytes into the existing ANSIParser.
-    // See sbansi-spec.js.
-    this._decoder  = new SBANSIDecoder();
     this._conn     = new WSConnection({
       onData:   (b) => this._onData(b),
       onStatus: (t, l) => this._updateStatus(t, l),
@@ -72,12 +65,7 @@ export class App {
     this._term.MAX_SCROLLBACK = CFG.SCROLLBACK;
 
     this._telnet.onData = (bytes) => {
-      // Decode the binary opcode stream back to ANSI bytes, then feed to
-      // the existing ANSIParser. The decoder is a pure byte-to-byte
-      // transducer; it adds no semantics that the parser doesn't already
-      // know about.
-      const ansi = this._decoder.decode(bytes);
-      this._parser.feed(ansi);
+      this._parser.feed(bytes);
       this._term.scanURLs();
       this._dirty = true;
     };

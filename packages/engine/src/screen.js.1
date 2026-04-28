@@ -586,8 +586,8 @@ class Screen {
       cell.ch = (cell.ch === '\u2584') ? '\u2588' : '\u2580';
       cell.fg = fg;
     } else {
-      cell.ch = (cell.ch === '\u2580') ? '\u2588' : '\u2584';
-      if (cell.ch !== '\u2588') cell.fg = Color.BLACK;
+      cell.ch = (cell.ch === '\u2580') ? '\u2584' : '\u2584';
+      if (cell.ch !== '\u2580') cell.fg = Color.BLACK;
       cell.bg = fg;
     }
     return this;

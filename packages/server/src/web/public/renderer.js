@@ -28,7 +28,7 @@
  *   3. Composite fg-masked canvas over bg canvas.
  */
 
-import { buildFontSheet } from './font.js';
+import { buildFontSheet } from './font.min.js';
 
 export const VGA_PALETTE = [
   '#000000','#AA0000','#00AA00','#AA5500',

@@ -277,9 +277,7 @@ const Draw = {
    * @param {string}   ansiStr  - raw ANSI escape sequence string
    */
   ansiArt(terminal, ansiStr) {
-    // Truncate at SAUCE/EOF marker (0x1A = CP437 SUB, conventional ANSI art terminator)
-    const eofIdx = ansiStr.indexOf('\x1a');
-    terminal.write(eofIdx !== -1 ? ansiStr.slice(0, eofIdx) : ansiStr);
+    terminal.write(ansiStr);
     return Draw;
   },
 
