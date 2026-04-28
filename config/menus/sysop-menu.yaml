@@ -1,0 +1,26 @@
+# sysop-menu.yaml — SynthDoor Sysop Role Menu
+# Shown before the top menu on login, and again before logoff.
+# Only visible to users with the 'sysop' role.
+#
+# Add entries here for any sysop-only tools or panels.
+# The 'Continue to main menu' entry is required and must remain.
+
+title: "SynthDoor Sysop"
+statusbar: "Sysop menu — use arrows/numbers to select.  C = continue to main menu"
+columns: 1
+
+selections:
+  - key: "1"
+    text: "Sysop Panel"
+    type: game
+    target: sysop-panel
+
+  - key: "C"
+    text: "Continue to main menu"
+    type: action
+    target: back
+
+  - key: "Q"
+    text: "Logoff"
+    type: action
+    target: exit

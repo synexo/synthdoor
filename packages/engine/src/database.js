@@ -62,8 +62,27 @@ class DB {
         username     TEXT PRIMARY KEY,
         first_seen   INTEGER DEFAULT (strftime('%s','now')),
         last_seen    INTEGER DEFAULT (strftime('%s','now')),
-        total_plays  INTEGER DEFAULT 0
+        total_plays  INTEGER DEFAULT 0,
+        login_count  INTEGER DEFAULT 0,
+        role         TEXT    DEFAULT 'user'
       );
+
+      -- Migrate: add columns to existing players tables that predate this schema
+      -- (SQLite ignores these if columns already exist via the error-suppression pattern)
+    `);
+
+    // ── Schema migrations (safe to run on every startup) ──────────────────
+    // Each ALTER TABLE is wrapped individually — SQLite will throw if the
+    // column already exists, so we catch and ignore those errors silently.
+    const migrations = [
+      `ALTER TABLE players ADD COLUMN login_count INTEGER DEFAULT 0`,
+      `ALTER TABLE players ADD COLUMN role        TEXT    DEFAULT 'user'`,
+    ];
+    for (const sql of migrations) {
+      try { this._db.exec(sql); } catch (_) { /* column already exists */ }
+    }
+
+    this._db.exec(`
 
       -- Per-game high score table
       CREATE TABLE IF NOT EXISTS scores (
@@ -124,6 +143,14 @@ class DB {
         updated_at INTEGER DEFAULT (strftime('%s','now')),
         PRIMARY KEY (game, key)
       );
+
+      -- Per-game aggregate statistics (play counts + rolling avg session duration)
+      CREATE TABLE IF NOT EXISTS game_stats (
+        game             TEXT PRIMARY KEY,
+        play_count       INTEGER DEFAULT 0,
+        session_count    INTEGER DEFAULT 0,
+        avg_duration_sec REAL    DEFAULT 0
+      );
     `);
 
     return this;
@@ -141,6 +168,102 @@ class DB {
 
   getPlayer(username) {
     return this._db.prepare('SELECT * FROM players WHERE username = ?').get(username);
+  }
+
+  /** Increment the login counter for a player (upserts the row if needed). */
+  incrementLoginCount(username) {
+    this._db.prepare(`
+      INSERT INTO players (username, login_count) VALUES (?, 1)
+      ON CONFLICT(username) DO UPDATE SET
+        last_seen   = strftime('%s','now'),
+        login_count = login_count + 1
+    `).run(username);
+  }
+
+  // ─── Role management ────────────────────────────────────────────────────
+
+  /**
+   * Get the stored role for a player ('user' | 'sysop').
+   * Returns 'user' if the player record doesn't exist.
+   */
+  getRole(username) {
+    const row = this._db.prepare(
+      `SELECT role FROM players WHERE username = ?`
+    ).get(username);
+    return row ? (row.role || 'user') : 'user';
+  }
+
+  /**
+   * Set the role for a player. Upserts the player record if needed.
+   * @param {string} username
+   * @param {string} role  'user' | 'sysop'
+   */
+  setRole(username, role) {
+    this._db.prepare(`
+      INSERT INTO players (username, role) VALUES (?, ?)
+      ON CONFLICT(username) DO UPDATE SET role = excluded.role
+    `).run(username, role);
+  }
+
+  /** Return all players with a given role. */
+  getPlayersByRole(role) {
+    return this._db.prepare(
+      `SELECT username, first_seen, last_seen, login_count FROM players WHERE role = ? ORDER BY username`
+    ).all(role);
+  }
+
+  // ─── Game statistics ────────────────────────────────────────────────────
+
+  /**
+   * Increment play count for a game.
+   * Called when a player enters a game.
+   */
+  incrementGamePlayCount(game) {
+    this._db.prepare(`
+      INSERT INTO game_stats (game, play_count) VALUES (?, 1)
+      ON CONFLICT(game) DO UPDATE SET play_count = play_count + 1
+    `).run(game);
+  }
+
+  /**
+   * Record a completed game session, updating the rolling average duration.
+   * Called when a player exits a game.
+   * @param {string} game
+   * @param {number} durationSec  Session duration in seconds
+   */
+  recordGameSession(game, durationSec) {
+    const row = this._db.prepare(
+      `SELECT session_count, avg_duration_sec FROM game_stats WHERE game = ?`
+    ).get(game);
+
+    if (!row) {
+      this._db.prepare(`
+        INSERT INTO game_stats (game, play_count, session_count, avg_duration_sec)
+        VALUES (?, 1, 1, ?)
+      `).run(game, durationSec);
+    } else {
+      const newCount = row.session_count + 1;
+      const newAvg   = (row.avg_duration_sec * row.session_count + durationSec) / newCount;
+      this._db.prepare(`
+        UPDATE game_stats SET session_count = ?, avg_duration_sec = ? WHERE game = ?
+      `).run(newCount, newAvg, game);
+    }
+  }
+
+  /** Get stats for all games, ordered by play count descending. */
+  getGameStats() {
+    return this._db.prepare(`
+      SELECT game, play_count, session_count, avg_duration_sec
+      FROM game_stats ORDER BY play_count DESC
+    `).all();
+  }
+
+  /** Get top N users by login count. */
+  getTopUsers(limit = 20) {
+    return this._db.prepare(`
+      SELECT username, login_count, last_seen
+      FROM players ORDER BY login_count DESC LIMIT ?
+    `).all(limit);
   }
 
   // ─── Scores & Leaderboards ──────────────────────────────────────────────

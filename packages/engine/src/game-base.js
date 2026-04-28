@@ -71,11 +71,12 @@ class GameBase {
       this.db.touchPlayer(this.username);
     }
 
-    // Handle disconnect mid-game
-    this.terminal?.on('disconnect', () => {
+    // Handle disconnect mid-game — store handler so it can be removed later
+    this._disconnectHandler = () => {
       this._running = false;
       this._cleanup().catch(() => {});
-    });
+    };
+    this.terminal?.on('disconnect', this._disconnectHandler);
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────
@@ -112,8 +113,19 @@ class GameBase {
   async onDisconnect() {}
 
   async _cleanup() {
+    if (this._cleanupCalled) return;
+    this._cleanupCalled = true;
     this._running = false;
-    this.input.stop();
+
+    // Remove the disconnect listener so it can't fire _cleanup() a second time
+    if (this._disconnectHandler) {
+      this.terminal?.removeListener('disconnect', this._disconnectHandler);
+      this._disconnectHandler = null;
+    }
+
+    // Destroy input — removes the terminal 'key' listener and all local listeners
+    this.input.destroy();
+
     try {
       await this.onDisconnect();
       this.terminal?.showCursor();

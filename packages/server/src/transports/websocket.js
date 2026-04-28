@@ -42,6 +42,7 @@ const IAC  = 255;
 const WILL = 251;
 const WS_NEGOTIATE = Buffer.from([IAC, WILL, 1, IAC, WILL, 3]);
 const { runSession } = require('../session');
+const { getLogger }  = require('../logger');
 
 // ─── MIME types for static file serving ──────────────────────────────────
 const MIME = {
@@ -62,11 +63,12 @@ class WebSocketTransport {
    * @param {GameRouter} router
    * @param {string}     authMode   'naive' | 'authenticated'
    */
-  constructor(config, db, router, authMode) {
+  constructor(config, db, router, authMode, registry) {
     this.config   = config;
     this.db       = db;
     this.router   = router;
     this.authMode = authMode || 'naive';
+    this.registry = registry || null;
 
     this._server = null;
     this._wss    = null;
@@ -76,7 +78,7 @@ class WebSocketTransport {
     const publicDir = path.resolve(__dirname, '..', '..', 'src', 'web', 'public');
 
     if (!fs.existsSync(publicDir)) {
-      console.warn(`[WebSocket] WARNING: public dir not found: ${publicDir}`);
+      getLogger().warn(`[WebSocket] WARNING: public dir not found: ${publicDir}`);
     }
 
     this._server = http.createServer((req, res) => {
@@ -87,13 +89,13 @@ class WebSocketTransport {
 
     this._wss.on('connection', (ws, req) => {
       this._handleConnection(ws, req).catch(err => {
-        console.error('[WebSocket] Unhandled connection error:', err.message);
+        getLogger().error('[WebSocket] Unhandled connection error:', err.message);
         try { ws.close(); } catch (_) {}
       });
     });
 
     this._server.listen(port, () => {
-      console.log(`[WebSocket] Listening on port ${port} (${this.authMode} mode)`);
+      getLogger().info(`[WebSocket] Listening on port ${port} (${this.authMode} mode)`);
     });
 
     return this;
@@ -141,7 +143,7 @@ class WebSocketTransport {
   async _handleConnection(ws, req) {
     const remoteIP = req.socket?.remoteAddress || 'unknown';
 
-    console.log(`[WebSocket] ${remoteIP} connected`);
+    getLogger().info(`[WebSocket] ${remoteIP} connected`);
 
     const maxIdleMs = this.config.getInt('web_max_idle_minutes', 10) * 60 * 1000;
     let lastActivity = Date.now();
@@ -149,7 +151,7 @@ class WebSocketTransport {
     // ── Idle timeout ────────────────────────────────────────────────────────
     const idleTimer = setInterval(() => {
       if (Date.now() - lastActivity > maxIdleMs) {
-        console.log(`[WebSocket] Idle timeout: ${remoteIP}`);
+        getLogger().info(`[WebSocket] Idle timeout: ${remoteIP}`);
         try { ws.send(Buffer.from('\r\nIdle timeout — disconnecting.\r\n', 'latin1')); } catch (_) {}
         ws.close();
       }
@@ -157,7 +159,7 @@ class WebSocketTransport {
 
     ws.on('close', () => {
       clearInterval(idleTimer);
-      console.log(`[WebSocket] ${remoteIP} disconnected`);
+      getLogger().info(`[WebSocket] ${remoteIP} disconnected`);
     });
 
     ws.on('error', () => {
@@ -215,13 +217,16 @@ class WebSocketTransport {
         terminal,
         output,
         filtered,
-        authMode:  this.authMode,
-        transport: 'web',
-        ipAddress: remoteIP,
-        router:    this.router,
+        authMode:   this.authMode,
+        transport:  'web',
+        ipAddress:  remoteIP,
+        router:     this.router,
+        config:     this.config,
+        registry:   this.registry,
+        disconnect: () => { try { ws.close(); } catch (_) {} },
       });
     } catch (err) {
-      console.error(`[WebSocket] Session error for ${remoteIP}:`, err.stack || err.message);
+      getLogger().error(`[WebSocket] Session error for ${remoteIP}:`, err.stack || err.message);
     } finally {
       clearInterval(idleTimer);
       try { ws.close(); } catch (_) {}

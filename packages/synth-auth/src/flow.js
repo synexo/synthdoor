@@ -26,6 +26,12 @@ const {
   decodeRecoveryCodeToWords,
 } = require('./crypto');
 
+const path = require('path');
+// Reserved username policy — shared with server layer
+const { isReservedUsername } = require(
+  path.join(__dirname, '..', '..', 'server', 'src', 'reserved.js')
+);
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -161,7 +167,11 @@ async function guestFlow(dialogue, config) {
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const guestUsername = wordList.pickOne();
-    const words         = wordList.pickUnique(3);
+
+    // Skip the vanishingly unlikely case of a reserved word being picked
+    if (isReservedUsername(guestUsername)) continue;
+
+    const words = wordList.pickUnique(3);
 
     let candidate;
     try {
@@ -455,30 +465,50 @@ async function registrationFlow(dialogue, config, prefilled = null) {
   if (prefilled) {
     identity = prefilled.derivedIdentity;
   } else {
-    const rawUsername = await dialogue.prompt('Enter your desired username: ');
-
-    if (!rawUsername || !isValidUsernameInput(rawUsername.trim())) {
-      dialogue.send('Invalid username. Use only letters and numbers (A-Z, a-z, 0-9).');
-      return { success: false, reason: 'invalid_username' };
-    }
-
     identity = null;
-    for (let i = 0; i < 5; i++) {
-      const candidate = await deriveIdentity(
-        rawUsername.trim(),
-        wordList.pickUnique(3),
-        config.pepper,
-        config.synthSalt,
-        wordList
-      );
-      if (!db.publicIdExists(candidate.internalId)) { identity = candidate; break; }
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const rawUsername = await dialogue.prompt('Enter your desired username: ');
+
+      if (!rawUsername || !isValidUsernameInput(rawUsername.trim())) {
+        dialogue.send('Invalid username. Use only letters and numbers (A-Z, a-z, 0-9).');
+        continue;
+      }
+
+      if (isReservedUsername(rawUsername.trim())) {
+        dialogue.send('');
+        dialogue.send(`The username "${rawUsername.trim()}" is unavailable. Please try a different username.`);
+        dialogue.send('');
+        continue;
+      }
+
+      // Derive identity — retry up to 5 times if publicId collision
+      let candidate = null;
+      for (let i = 0; i < 5; i++) {
+        const c = await deriveIdentity(
+          rawUsername.trim(),
+          wordList.pickUnique(3),
+          config.pepper,
+          config.synthSalt,
+          wordList
+        );
+        if (!db.publicIdExists(c.internalId)) { candidate = c; break; }
+      }
+
+      if (!candidate) {
+        dialogue.send('');
+        dialogue.send(`The username "${rawUsername.trim()}" is unavailable. Please try a different username.`);
+        dialogue.send('');
+        continue;
+      }
+
+      identity = candidate;
+      break;
     }
 
     if (!identity) {
-      dialogue.send('');
-      dialogue.send(`The username "${rawUsername.trim()}" is unavailable. Please try a different username.`);
-      dialogue.send('');
-      return { success: false, reason: 'username_unavailable' };
+      dialogue.send('Too many failed username attempts. Please reconnect and try again.');
+      return { success: false, reason: 'max_attempts' };
     }
   }
 

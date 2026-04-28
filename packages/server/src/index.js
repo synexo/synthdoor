@@ -32,6 +32,9 @@ const RloginTransport     = require('./transports/rlogin');
 const WebSocketTransport  = require('./transports/websocket');
 const GameRouter          = require('./game-router');
 const { initAuth }        = require('./auth-flow');
+const Scheduler           = require('./scheduler');
+const { createLogger }    = require('./logger');
+const SessionRegistry     = require('./session-registry');
 
 async function main() {
   const confPath = process.env.SYNTHDOOR_CONF
@@ -40,23 +43,35 @@ async function main() {
   const config = new Config(confPath);
   config.load();
 
-  console.log('===========================================');
-  console.log('  SynthDoor BBS Door Game Engine v1.0.0  ');
-  console.log('===========================================');
+  // ─── Scheduler ────────────────────────────────────────────────────────────
+  const scheduler = new Scheduler();
+  scheduler.start();
+
+  // ─── Logger ───────────────────────────────────────────────────────────────
+  const projectRoot  = path.resolve(__dirname, '../../..');
+  const logsDir      = path.resolve(projectRoot, config.get('logs_dir', './logs'));
+  const logKeepDays  = config.getInt('log_keep_days', 7);
+  const logPruneTime = config.get('log_prune_time', '02:00');
+
+  const logger = createLogger({ logsDir, keepDays: logKeepDays, pruneTime: logPruneTime, scheduler });
+
+  logger.info('===========================================');
+  logger.info('  SynthDoor BBS Door Game Engine v1.0.0  ');
+  logger.info('===========================================');
 
   // ─── Auth mode ────────────────────────────────────────────────────────────
   const authMode        = config.get('auth_mode', 'naive').toLowerCase().trim();
   const isAuthenticated = authMode === 'authenticated';
-  console.log(`[Auth] Mode: ${authMode}`);
+  logger.info(`[Auth] Mode: ${authMode}`);
 
   if (isAuthenticated) {
     const pepper    = process.env.PEPPER;
     const synthSalt = process.env.SYNTH_SALT;
 
     if (!pepper || !synthSalt) {
-      console.error('[Auth] ERROR: PEPPER and SYNTH_SALT environment variables must be set in authenticated mode.');
-      console.error(`[Auth] Looked for .env at: ${dotenvPath}`);
-      console.error('[Auth] Copy .env.example to .env and populate the values, then restart.');
+      logger.error('[Auth] ERROR: PEPPER and SYNTH_SALT environment variables must be set in authenticated mode.');
+      logger.error(`[Auth] Looked for .env at: ${dotenvPath}`);
+      logger.error('[Auth] Copy .env.example to .env and populate the values, then restart.');
       process.exit(1);
     }
 
@@ -65,7 +80,7 @@ async function main() {
       synthSaltBuf = Buffer.from(synthSalt, 'hex');
       if (synthSaltBuf.length < 16) throw new Error('too short');
     } catch (e) {
-      console.error('[Auth] ERROR: SYNTH_SALT must be a hex-encoded string of at least 16 bytes (32 hex chars).');
+      logger.error('[Auth] ERROR: SYNTH_SALT must be a hex-encoded string of at least 16 bytes (32 hex chars).');
       process.exit(1);
     }
 
@@ -81,58 +96,64 @@ async function main() {
       wordlistPath,
     });
 
-    console.log(`[Auth] SynthAuth initialised. DB: ${authDbPath}`);
+    logger.info(`[Auth] SynthAuth initialised. DB: ${authDbPath}`);
   }
 
   // ─── Main DB ──────────────────────────────────────────────────────────────
   const dbPath = config.get('db_path', './data/synthdoor.db');
   const db = new DB(dbPath);
   db.init();
-  console.log(`[DB] Database: ${dbPath}`);
+  logger.info(`[DB] Database: ${dbPath}`);
 
   const gamesDir = config.get('games_dir', path.resolve(__dirname, '../../../games'));
   const menusDir = config.get('menus_dir', path.resolve(__dirname, '../../../config/menus'));
-  const router = new GameRouter(config, db, gamesDir, menusDir);
+
+  // ─── Session Registry ─────────────────────────────────────────────────────
+  const registry = new SessionRegistry();
+
+  const router = new GameRouter(config, db, gamesDir, menusDir, logger, authMode, registry);
   router.discover();
 
   const transports = [];
 
   // ─── Telnet ───────────────────────────────────────────────────────────────
   if (config.getBool('telnet_enabled', true)) {
-    const telnet = new TelnetTransport(config, db, router, authMode);
+    const telnet = new TelnetTransport(config, db, router, authMode, registry);
     const port   = config.getInt('telnet_port', 2323);
     telnet.listen(port);
     transports.push(telnet);
-    console.log(`[Telnet] Listening on port ${port} (${authMode} mode)`);
+    logger.info(`[Telnet] Listening on port ${port} (${authMode} mode)`);
   }
 
   // ─── rlogin ───────────────────────────────────────────────────────────────
   if (config.getBool('rlogin_enabled', false)) {
-    const rlogin = new RloginTransport(config, db, router, authMode);
+    const rlogin = new RloginTransport(config, db, router, authMode, registry);
     const port   = config.getInt('rlogin_port', 513);
     rlogin.listen(port);
     transports.push(rlogin);
-    console.log(`[rlogin] Listening on port ${port} (${authMode} mode)`);
+    logger.info(`[rlogin] Listening on port ${port} (${authMode} mode)`);
   }
 
-  // ─── WebSocket  ───────────────────────────────────
+  // ─── WebSocket  ───────────────────────────────────────────────────────────
   if (config.getBool('web_enabled', true)) {
-    const ws   = new WebSocketTransport(config, db, router, authMode);
+    const ws   = new WebSocketTransport(config, db, router, authMode, registry);
     const port = config.getInt('web_port', 8080);
     ws.listen(port);
     transports.push(ws);
-    console.log(`[WebSocket] UI + direct engine on port ${port} (${authMode} mode)`);
+    logger.info(`[WebSocket] UI + direct engine on port ${port} (${authMode} mode)`);
   }
 
-  console.log('[Server] All transports active. Ctrl+C to stop.');
-  process.on('SIGINT',  () => shutdown(transports, db));
-  process.on('SIGTERM', () => shutdown(transports, db));
+  logger.info('[Server] All transports active. Ctrl+C to stop.');
+  process.on('SIGINT',  () => shutdown(transports, db, scheduler, logger));
+  process.on('SIGTERM', () => shutdown(transports, db, scheduler, logger));
 }
 
-function shutdown(transports, db) {
-  console.log('\n[Server] Shutting down…');
+function shutdown(transports, db, scheduler, logger) {
+  (logger || console).info('\n[Server] Shutting down…');
   for (const t of transports) { try { t.close(); } catch (_) {} }
+  if (scheduler) scheduler.stop();
   db.close();
+  if (logger) logger.close();
   process.exit(0);
 }
 

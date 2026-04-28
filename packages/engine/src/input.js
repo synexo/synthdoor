@@ -102,16 +102,28 @@ class Input extends EventEmitter {
     this.bindings = Object.assign({}, DEFAULT_BINDINGS, bindings);
     this._active  = false;
 
-    terminal.on('key', (key) => {
+    // Store as a named method so it can be removed in destroy()
+    this._keyHandler = (key) => {
       if (!this._active) return;
       const action = this.bindings[key] || null;
       this.emit('key', key);
       if (action) this.emit('action', action, key);
-    });
+    };
+    terminal.on('key', this._keyHandler);
   }
 
-  start()  { this._active = true;  return this; }
-  stop()   { this._active = false; return this; }
+  start()   { this._active = true;  return this; }
+  stop()    { this._active = false; return this; }
+
+  /** Remove the terminal listener and all local listeners. Call on session end. */
+  destroy() {
+    this._active = false;
+    if (this._keyHandler) {
+      this.terminal.removeListener('key', this._keyHandler);
+      this._keyHandler = null;
+    }
+    this.removeAllListeners();
+  }
 
   waitAction() {
     return new Promise((resolve) => { this.once('action', resolve); });

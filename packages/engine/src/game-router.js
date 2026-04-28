@@ -55,32 +55,6 @@ class GameRouter {
     this._games     = new Map();
     this._loader    = new MenuLoader(this.menusDir);
     this._gameRoles = this._parseGameRoles();
-
-    // Patch loader.loadTop to always filter restricted games, regardless of
-    // which version of menu-loader.js is on disk. This is the authoritative
-    // filter point — the router owns game_roles, so it owns this filtering.
-    const originalLoadTop = this._loader.loadTop.bind(this._loader);
-    this._loader.loadTop = (...args) => {
-      // Always resolve public/restricted from this router
-      const publicGames     = this.listPublicGames();
-      const all             = this.listGames();
-      const pubSet          = new Set(publicGames.map(g => g.name));
-      const restrictedNames = new Set(all.filter(g => !pubSet.has(g.name)).map(g => g.name));
-
-      this._log.info(`[Router] Menu filter: ${publicGames.length} public game(s), restricted: [${[...restrictedNames].join(', ') || 'none'}]`);
-
-      // Call original with publicGames for auto-gen
-      const def = originalLoadTop(publicGames);
-
-      // Strip restricted games from selections regardless of YAML contents
-      if (def && def.selections && restrictedNames.size > 0) {
-        def.selections = def.selections.filter(
-          sel => !(sel.type === 'game' && restrictedNames.has(sel.target))
-        );
-      }
-
-      return def;
-    };
   }
 
   /**
@@ -122,8 +96,6 @@ class GameRouter {
       this._log.warn(`[Router] Games directory not found: ${this.gamesDir}`);
       return;
     }
-
-    this._log.info(`[Router] Role-restricted games: ${[...this._gameRoles.keys()].join(', ') || '(none)'}`);
 
     const dirs = fs.readdirSync(this.gamesDir, { withFileTypes: true })
       .filter(d => d.isDirectory())

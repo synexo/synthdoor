@@ -21,6 +21,7 @@ const { Terminal } = require(
 );
 const { NEGOTIATE, TelnetFilterStream, sleep } = require('./telnet-filter');
 const { runSession } = require('../session');
+const { getLogger }  = require('../logger');
 
 // IAC WONT ECHO — sent on teardown to restore client-side echo
 const IAC  = 255;
@@ -35,18 +36,19 @@ class TelnetTransport {
    * @param {GameRouter} router
    * @param {string}     authMode  'naive' | 'authenticated'
    */
-  constructor(config, db, router, authMode) {
+  constructor(config, db, router, authMode, registry) {
     this.config   = config;
     this.db       = db;
     this.router   = router;
     this.authMode = authMode || 'naive';
+    this.registry = registry || null;
     this._server  = null;
   }
 
   listen(port) {
     this._server = net.createServer((socket) => {
       this._handleConnection(socket).catch(err => {
-        console.error('[Telnet] Unhandled error:', err.message);
+        getLogger().error('[Telnet] Unhandled error:', err.message);
         socket.destroy();
       });
     });
@@ -78,24 +80,27 @@ class TelnetTransport {
       transport: 'telnet',
     });
 
-    console.log(`[Telnet] ${remoteIP} connected`);
+    getLogger().info(`[Telnet] ${remoteIP} connected`);
 
     try {
       await runSession({
         terminal,
-        output:    socket,
+        output:     socket,
         filtered,
-        authMode:  this.authMode,
-        transport: 'telnet',
-        ipAddress: remoteIP,
-        router:    this.router,
+        authMode:   this.authMode,
+        transport:  'telnet',
+        ipAddress:  remoteIP,
+        router:     this.router,
+        config:     this.config,
+        registry:   this.registry,
+        disconnect: () => socket.destroy(),
       });
     } catch (err) {
-      console.error(`[Telnet] Session error for ${remoteIP}:`, err.stack || err.message);
+      getLogger().error(`[Telnet] Session error for ${remoteIP}:`, err.stack || err.message);
     } finally {
       try { socket.write(RESTORE_ECHO); } catch (_) {}
       socket.destroy();
-      console.log(`[Telnet] ${remoteIP} disconnected`);
+      getLogger().info(`[Telnet] ${remoteIP} disconnected`);
     }
   }
 }

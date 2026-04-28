@@ -42,6 +42,8 @@ const {
   runSilentBBSLogin,
   runInteractiveLogin,
 } = require('../auth-flow');
+const { getLogger } = require('../logger');
+const { isSysopAllowed } = require('../reserved');
 
 const { RECOVERY_CODE_RE } = require(pathModule.join(__dirname, '..', '..', '..', 'synth-auth', 'index.js'));
 
@@ -52,18 +54,19 @@ class RloginTransport {
    * @param {GameRouter} router
    * @param {string}     authMode  'naive' | 'authenticated'
    */
-  constructor(config, db, router, authMode) {
+  constructor(config, db, router, authMode, registry) {
     this.config   = config;
     this.db       = db;
     this.router   = router;
     this.authMode = authMode || 'naive';
+    this.registry = registry || null;
     this._server  = null;
   }
 
   listen(port) {
     this._server = netModule.createServer((socket) => {
       this._handleConnection(socket).catch(err => {
-        console.error('[rlogin] Unhandled error:', err.message);
+        getLogger().error('[rlogin] Unhandled error:', err.message);
         socket.destroy();
       });
     });
@@ -109,20 +112,34 @@ class RloginTransport {
 
   async _handleNaive(terminal, socket, clientUser, serverUser, ipAddress) {
     const username = (clientUser || 'guest').trim() || 'guest';
-    terminal.username = username;
 
-    // Determine game from ServerUser only
+    if (!isSysopAllowed(username, this.config)) {
+      getLogger().warn(`[rlogin/naive] Blocked reserved username attempt: "${username}" from ${ipAddress || 'unknown'}`);
+      socket.destroy();
+      return;
+    }
+
+    terminal.username = username;
     const gameName = this._resolveGame(serverUser);
 
-    console.log(`[rlogin/naive] ${username} connected from ${ipAddress}, game: ${gameName || 'menu'}`);
+    const sessionId = this.registry ? this.registry.add({
+      username,
+      transport:  'rlogin',
+      ipAddress,
+      disconnect: () => socket.destroy(),
+    }) : null;
+
+    getLogger().info(`[Session] LOGIN username=${username} transport=rlogin ip=${ipAddress || 'unknown'}`);
+    try { this.router.db.incrementLoginCount(username); } catch (_) {}
 
     try {
-      await this.router.route(terminal, gameName, 'rlogin');
+      await this.router.route(terminal, gameName, 'rlogin', sessionId);
     } catch (err) {
-      console.error(`[rlogin/naive] Error for ${username}:`, err.message);
+      getLogger().error(`[rlogin/naive] Error for ${username}:`, err.message);
     } finally {
+      getLogger().info(`[Session] LOGOFF username=${username} transport=rlogin`);
+      if (this.registry && sessionId) this.registry.remove(sessionId);
       socket.destroy();
-      console.log(`[rlogin/naive] ${username} disconnected`);
     }
   }
 
@@ -145,7 +162,7 @@ class RloginTransport {
 
     if (serverUserIsRecoveryCode) {
       // ── Silent BBS path: auto-register/login, no prompts ─────────────────
-      console.log(`[rlogin/auth] BBS recovery code from ${ipAddress} for user "${rawUsername}"`);
+      getLogger().info(`[rlogin/auth] BBS recovery code from ${ipAddress} for user "${rawUsername}"`);
 
       authResult = await runSilentBBSLogin(
         rawUsername,
@@ -154,7 +171,7 @@ class RloginTransport {
       );
 
       if (!authResult || !authResult.success) {
-        console.log(`[rlogin/auth] Silent BBS login failed for "${rawUsername}" from ${ipAddress}`);
+        getLogger().info(`[rlogin/auth] Silent BBS login failed for "${rawUsername}" from ${ipAddress}`);
         socket.destroy();
         return;
       }
@@ -176,12 +193,12 @@ class RloginTransport {
     } else {
       // ── Interactive auth ──────────────────────────────────────────────────
       // If ServerUser is a known game, the user still needs to auth before playing.
-      console.log(`[rlogin/auth] Interactive auth from ${ipAddress} for user "${rawUsername}"`);
+      getLogger().info(`[rlogin/auth] Interactive auth from ${ipAddress} for user "${rawUsername}"`);
 
       authResult = await runInteractiveLogin(terminal, rawUsername, ipAddress);
 
       if (!authResult || !authResult.success) {
-        console.log(`[rlogin/auth] Interactive login failed for "${rawUsername}" from ${ipAddress}`);
+        getLogger().info(`[rlogin/auth] Interactive login failed for "${rawUsername}" from ${ipAddress}`);
         socket.destroy();
         return;
       }
@@ -190,15 +207,24 @@ class RloginTransport {
     const username = authResult.username;  // PublicID
     terminal.username = username;
 
-    console.log(`[rlogin/auth] ${username} authenticated from ${ipAddress}, game: ${gameName || 'menu'}`);
+    const sessionId = this.registry ? this.registry.add({
+      username,
+      transport:  'rlogin',
+      ipAddress,
+      disconnect: () => socket.destroy(),
+    }) : null;
+
+    getLogger().info(`[Session] LOGIN username=${username} transport=rlogin ip=${ipAddress || 'unknown'}`);
+    try { this.router.db.incrementLoginCount(username); } catch (_) {}
 
     try {
-      await this.router.route(terminal, gameName, 'rlogin');
+      await this.router.route(terminal, gameName, 'rlogin', sessionId);
     } catch (err) {
-      console.error(`[rlogin/auth] Error for ${username}:`, err.message);
+      getLogger().error(`[rlogin/auth] Error for ${username}:`, err.message);
     } finally {
+      getLogger().info(`[Session] LOGOFF username=${username} transport=rlogin`);
+      if (this.registry && sessionId) this.registry.remove(sessionId);
       socket.destroy();
-      console.log(`[rlogin/auth] ${username} disconnected`);
     }
   }
 

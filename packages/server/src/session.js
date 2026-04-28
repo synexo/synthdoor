@@ -20,63 +20,66 @@
 
 const path = require('path');
 const { runEntryFlow } = require('./auth-flow');
+const { isSysopAllowed } = require('./reserved');
+const { getLogger } = require('./logger');
 
-/**
- * Run the auth/session setup for a connected terminal, then route to a game.
- *
- * @param {object} opts
- * @param {import('../../engine/src/terminal')} opts.terminal
- *   Terminal instance wrapping the connection. username will be set here.
- * @param {object}      opts.output
- *   Raw writable used for the naive-mode username echo prompt.
- *   (For telnet: the net.Socket. For WebSocket: the WsWritable adapter.)
- * @param {Transform}   opts.filtered
- *   TelnetFilterStream providing clean input bytes.
- * @param {string}      opts.authMode   'naive' | 'authenticated'
- * @param {string}      opts.transport  'telnet' | 'web'
- * @param {string|null} opts.ipAddress  Remote IP for auth logging/rate-limiting.
- * @param {GameRouter}  opts.router
- * @returns {Promise<void>}  Resolves when the session ends (game exited / disconnected).
- */
-async function runSession({ terminal, output, filtered, authMode, transport, ipAddress, router }) {
+async function runSession({ terminal, output, filtered, authMode, transport, ipAddress, router, config, registry, disconnect }) {
   let username;
 
   if (authMode === 'authenticated') {
-    // ── Authenticated mode: full SynthAuth entry flow ─────────────────────
-    // terminal.username is set to PublicID on success.
     let result;
     try {
       result = await runEntryFlow(terminal, ipAddress);
     } catch (err) {
-      // Auth flow threw (disconnected mid-flow, crypto error, etc.)
       throw err;
     }
 
     if (!result || !result.success) {
-      // Flow completed but auth failed (too many attempts, user quit, etc.)
-      // Return normally — caller will destroy the connection.
       return;
     }
 
-    username = result.username; // PublicID
+    username = result.username;
     terminal.username = username;
 
   } else {
-    // ── Naive mode: server-echoed username prompt, trust whatever is typed ─
-    // Inline require to avoid a circular dependency if auth-flow ever imports
-    // session in the future; also keeps the naive path self-contained here.
     const { readLineEchoed } = require('./transports/telnet-filter');
 
     output.write('\r\nSynthDoor BBS\r\nUsername: ');
-    username = await readLineEchoed(filtered, output);
-    username = username.trim() || 'guest';
+    const raw = await readLineEchoed(filtered, output);
+    username  = raw.trim() || 'guest';
     output.write('\r\n');
+
+    if (!isSysopAllowed(username, config)) {
+      getLogger().warn(`[Session] Blocked reserved username attempt: "${username}" from ${ipAddress || 'unknown'}`);
+      output.write('\r\nThat username is not available.\r\n\r\n');
+      return;
+    }
 
     terminal.username = username;
   }
 
-  // ── Hand off to the game router ──────────────────────────────────────────
-  await router.route(terminal, null, transport);
+  // ── Register with session registry ───────────────────────────────────────
+  let sessionId = null;
+  if (registry) {
+    sessionId = registry.add({
+      username,
+      transport,
+      ipAddress,
+      disconnect: disconnect || (() => {}),
+    });
+  }
+
+  getLogger().info(`[Session] LOGIN username=${username} transport=${transport} ip=${ipAddress || 'unknown'}`);
+  try { router.db.incrementLoginCount(username); } catch (_) {}
+
+  try {
+    await router.route(terminal, null, transport, sessionId);
+  } finally {
+    getLogger().info(`[Session] LOGOFF username=${username} transport=${transport}`);
+    if (registry && sessionId) {
+      registry.remove(sessionId);
+    }
+  }
 }
 
 module.exports = { runSession };

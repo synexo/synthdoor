@@ -1,0 +1,7 @@
+{
+  "name": "sysop-panel",
+  "version": "1.0.0",
+  "description": "SynthDoor Sysop Administration Panel",
+  "main": "src/index.js",
+  "private": true
+}

@@ -110,8 +110,15 @@ class UsurperReborn extends GameBase {
         // Regex to match ANSI sequences so we can calculate visible string length
         const ansiRegex = /\x1b\[[0-9;]*[a-zA-Z]/g;
         const plainText = line.replace(ansiRegex, '').replace(/[\r\n]/g, '');
+        
+        // 1. Drop CP437 Line Drawing lines
+        // Matches if string contains ONLY CP437 box/block chars (\xB0 to \xDF) and whitespace,
+        // and has at least one actual drawing character so we don't accidentally drop pure blank lines.
+        if (plainText.length > 0 && /^[\xB0-\xDF\s]*[\xB0-\xDF]+[\xB0-\xDF\s]*$/.test(plainText)) {
+          return; // Drop the entire line
+        }
 
-        // Newline Collapsing (Squeeze Double Empty Lines)
+        // 2. Newline Collapsing (Squeeze Double Empty Lines)
         const isJustNewline = plainText.length === 0 && line.includes('\n');
         if (isJustNewline) {
           if (lastWasEmptyLine) return; // Drop sequential empty lines
@@ -120,15 +127,36 @@ class UsurperReborn extends GameBase {
           lastWasEmptyLine = false;
         }
 
-        // Clear Screen Detection (Reset Pagination)
+        // 3. Clear Screen Detection (Reset Pagination)
         if (/\x1b\[(2J|H|1;1H)/.test(line)) {
           linesPrinted = 0;
         }
 
-        // Send to terminal
-        this.terminal.writeRaw(line);
+        // 4. Space Squeezing (Best fit to 80 columns)
+        let outLine = line;
+        if (plainText.length > 79) {
+          let excess = plainText.length - 79;
+          
+          // Iteratively remove 1 space from gaps until we hit exactly 80 chars
+          // or run out of reducible spaces.
+          while (excess > 0) {
+            const before = outLine;
+            outLine = outLine.replace(/( {2,})/g, (match) => {
+              if (excess > 0) {
+                excess--;
+                return match.substring(1); // Shave off exactly 1 space from this gap
+              }
+              return match;
+            });
+            // If the string didn't change, there are no more double-spaces to squeeze
+            if (outLine === before) break; 
+          }
+        }
 
-        // Pagination (Burst Tracking)
+        // 5. Send to terminal
+        this.terminal.writeRaw(outLine);
+
+        // 6. Pagination (Burst Tracking)
         if (!isPrompt && line.includes('\n')) {
           linesPrinted++;
           

@@ -146,28 +146,13 @@ class MenuLoader {
    */
   /**
    * Load the top-level menu, auto-generating top.yaml if it doesn't exist.
-   * Accepts either a router instance or a games array for backwards compatibility.
+   *
+   * @param {Array} publicGames   Games without role restriction (for auto-gen and filtering)
+   * @param {Array} [allGames]    All registered games (to identify restricted ones in existing YAML)
+   * @returns {MenuDef}
    */
-  loadTop(gamesOrRouter, allGames) {
+  loadTop(publicGames, allGames) {
     const topPath = path.join(this.menusDir, 'top.yaml');
-
-    // Resolve public and all games regardless of what was passed
-    let publicGames, restrictedNames;
-    if (gamesOrRouter && typeof gamesOrRouter.listPublicGames === 'function') {
-      // Router instance passed — use it directly
-      publicGames     = gamesOrRouter.listPublicGames();
-      const all       = gamesOrRouter.listGames();
-      const pubSet    = new Set(publicGames.map(g => g.name));
-      restrictedNames = new Set(all.filter(g => !pubSet.has(g.name)).map(g => g.name));
-      getLogger().info(`[MenuLoader] loadTop: ${publicGames.length} public games, restricted: [${[...restrictedNames].join(', ') || 'none'}]`);
-    } else {
-      // Array passed — use as-is (legacy path)
-      publicGames     = gamesOrRouter || [];
-      const pubSet    = new Set(publicGames.map(g => g.name));
-      restrictedNames = allGames
-        ? new Set(allGames.filter(g => !pubSet.has(g.name)).map(g => g.name))
-        : new Set();
-    }
 
     if (!fs.existsSync(topPath)) {
       this._autoGenerateTop(topPath, publicGames);
@@ -175,11 +160,18 @@ class MenuLoader {
 
     const def = this.load('top');
 
-    // Strip role-restricted games from an existing top.yaml
-    if (def && def.selections && restrictedNames && restrictedNames.size > 0) {
-      def.selections = def.selections.filter(
-        sel => !(sel.type === 'game' && restrictedNames.has(sel.target))
+    // Strip role-restricted games from an existing top.yaml.
+    // Any game in allGames but NOT in publicGames is restricted.
+    if (def && def.selections && allGames) {
+      const publicNames     = new Set(publicGames.map(g => g.name));
+      const restrictedNames = new Set(
+        allGames.filter(g => !publicNames.has(g.name)).map(g => g.name)
       );
+      if (restrictedNames.size > 0) {
+        def.selections = def.selections.filter(
+          sel => !(sel.type === 'game' && restrictedNames.has(sel.target))
+        );
+      }
     }
 
     return def;

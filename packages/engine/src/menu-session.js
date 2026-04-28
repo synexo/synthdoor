@@ -90,7 +90,7 @@ class MenuSession {
     // ── Load the top-level menu ────────────────────────────────────────────
     let topDef;
     try {
-      topDef = this.loader.loadTop(this.router);
+      topDef = this.loader.loadTop(this.router.listPublicGames(), this.router.listGames());
     } catch (err) {
       getLogger().error(`[MenuSession] Failed to load top menu: ${err.message}`);
       terminal.println('\r\nMenu system error.  Goodbye!');
