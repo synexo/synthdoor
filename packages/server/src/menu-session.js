@@ -150,7 +150,12 @@ class MenuSession {
     // ── Goodbye ───────────────────────────────────────────────────────────
     const renderer   = new MenuRenderer(terminal, this.loader);
     const goodbyeDef = this.loader.loadGoodbye();
-    await renderer.showGoodbye(goodbyeDef);
+    const goodbye    = await renderer.showGoodbye(goodbyeDef);
+
+    // Propagate the user's choice to the caller (session.js).
+    // 'relogin'    → restart the full login loop without disconnecting.
+    // 'disconnect' → fall through; caller closes the connection normally.
+    return goodbye;
   }
 
   // ─── Public: jump API ─────────────────────────────────────────────────────

@@ -85,16 +85,29 @@ const UNICODE_TO_CP437 = new Map([
   [0x2193, 0x19], // ↓
   [0x2192, 0x1A], // →
   [0x2190, 0x1B], // ←
+  [0x221F, 0x1C], // ∟  RIGHT ANGLE (official CP437 0x1C)
+  [0x2194, 0x1D], // ↔  LEFT RIGHT ARROW (official CP437 0x1D)
   [0x25B2, 0x1E], // ▲
   [0x25BC, 0x1F], // ▼
   [0x25BA, 0x10], // ►
   [0x25C4, 0x11], // ◄
 
+  // ── Double-headed / diagonal arrows (near-equivalents) ──────────────────
+  [0x21D0, 0x3C], // ⇐  → <
+  [0x21D1, 0x5E], // ⇑  → ^
+  [0x21D2, 0x3E], // ⇒  → >
+  [0x21D3, 0x76], // ⇓  → v
+  [0x21D4, 0x3D], // ⇔  → =
+
   // ── Geometric shapes ────────────────────────────────────────────────────
   [0x25A0, 0xFE], // ■  BLACK SQUARE
-  [0x25AA, 0xFE], // ▪  (approx)
+  [0x25A1, 0x20], // □  WHITE SQUARE → space (approx)
+  [0x25AA, 0xFE], // ▪  (approx solid square)
+  [0x25AB, 0x6F], // ▫  → o (approx)
+  [0x25A3, 0x78], // ▣  → x (approx)
   [0x25C6, 0x04], // ◆  BLACK DIAMOND SUIT (approx with diamond)
   [0x25CA, 0x04], // ◊  LOZENGE
+  [0x25E6, 0x6F], // ◦  WHITE BULLET → o
 
   // ── Symbols ─────────────────────────────────────────────────────────────
   [0x263A, 0x01], // ☺  WHITE SMILING FACE
@@ -120,8 +133,33 @@ const UNICODE_TO_CP437 = new Map([
   [0x00A7, 0x15], // §
   [0x25AC, 0x16], // ▬
   [0x21A8, 0x17], // ↨
+  [0x2302, 0x7F], // ⌂  HOUSE (official CP437 0x7F / DEL position)
   [0x2605, 0x04], // ★  (approx with diamond)
   [0x2606, 0x04], // ☆
+
+  // ── Typographic punctuation (common in modern UTF-8 text) ───────────────
+  // These appear constantly when converting web content, articles, or any
+  // text authored in a modern word processor.  Map to their ASCII equivalents.
+  [0x2018, 0x27], // '  LEFT SINGLE QUOTATION MARK → '
+  [0x2019, 0x27], // '  RIGHT SINGLE QUOTATION MARK → '
+  [0x201A, 0x27], // ‚  SINGLE LOW-9 QUOTATION MARK → '
+  [0x201B, 0x27], // ‛  SINGLE HIGH-REVERSED-9 → '
+  [0x201C, 0x22], // "  LEFT DOUBLE QUOTATION MARK → "
+  [0x201D, 0x22], // "  RIGHT DOUBLE QUOTATION MARK → "
+  [0x201E, 0x22], // „  DOUBLE LOW-9 QUOTATION MARK → "
+  [0x201F, 0x22], // ‟  DOUBLE HIGH-REVERSED-9 → "
+  [0x2013, 0x2D], // –  EN DASH → -
+  [0x2014, 0x2D], // —  EM DASH → -
+  [0x2026, 0x2E], // …  HORIZONTAL ELLIPSIS → . (best single-byte approx)
+
+  // ── Math / symbols (near-equivalents) ───────────────────────────────────
+  [0x00D7, 0x78], // ×  MULTIPLICATION SIGN → x
+  [0x2260, 0x21], // ≠  NOT EQUAL TO → !
+  [0x00A9, 0x63], // ©  COPYRIGHT SIGN → c
+  [0x00AE, 0x72], // ®  REGISTERED SIGN → r
+  [0x2122, 0x74], // ™  TRADE MARK SIGN → t
+  [0x2713, 0x76], // ✓  CHECK MARK → v
+  [0x2717, 0x78], // ✗  BALLOT X → x
 
   // ── Latin extended / accented characters ────────────────────────────────
   [0x00C7, 0x80], // Ç
@@ -249,8 +287,16 @@ function encodeCP437(str) {
     if (mapped !== undefined) {
       bytes.push(mapped);
     } else {
-      // Unknown — replace with '?'
-      bytes.push(0x3F);
+      // Diacritic-strip fallback: decompose 'é' → 'e' + combining accent,
+      // then take the base character if it falls in ASCII range.
+      // Handles accented Latin characters not covered by the official CP437 table.
+      const normalized = str[i].normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (normalized.length > 0 && normalized.charCodeAt(0) < 0x80) {
+        bytes.push(normalized.charCodeAt(0));
+      } else {
+        // Truly unmappable — replace with '?'
+        bytes.push(0x3F);
+      }
     }
   }
 

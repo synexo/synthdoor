@@ -12,8 +12,6 @@ const path      = require('path');
 const SynthAuth = require(path.join(__dirname, '..', '..', 'synth-auth', 'index.js'));
 const { displayAnsiFile } = require(path.join(__dirname, '..', '..', 'engine', 'src', 'ansi-file.js'));
 
-const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 // Singleton — created once when the server starts, shared across connections.
 let _authInstance = null;
 
@@ -87,10 +85,6 @@ async function runEntryFlow(terminal, ipAddress) {
   if (result && result.success) {
     dialogue.send('Press any key to continue...');
     await dialogue.waitKey();
-  } else {
-    // Pause so any failure message (rate limit, max attempts, etc.) has time
-    // to reach the client before the transport closes the connection.
-    await _sleep(1500);
   }
 
   return result;

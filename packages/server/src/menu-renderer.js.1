@@ -51,7 +51,6 @@ const path = require('path');
 
 const enginePath = path.join(__dirname, '..', '..', 'engine', 'src', 'index.js');
 const { Screen, Draw, Color } = require(enginePath);
-const { prepareAnsiBuffer } = require(path.join(__dirname, '..', '..', 'engine', 'src', 'ansi-file.js'));
 
 // ─── Default theme ────────────────────────────────────────────────────────
 // All values are Color constants.  Overridden by MenuDef.colors when present.
@@ -114,16 +113,7 @@ class MenuRenderer {
     // ── ANSI art mode ─────────────────────────────────────────────────────
     if (def.ansifile) {
       this._renderFrame(def, theme);
-      // Flush title/status from Screen buffer first, then write ANS art directly
-      // to the wire so the art isn't overwritten by the Screen buffer's body cells.
-      // After the art, re-flush the status bar in case the ANS file contains
-      // ESC[2J which clears row 25.
-      this.screen.flush();
       this._renderAnsiArt(def.ansifile);
-      this.screen.statusBar(
-        ' ' + (def.statusbar || THEME.statusbar || ''),
-        theme.statusbar_fg, theme.statusbar_bg
-      );
       this.screen.flush();
       return this._waitKeyOnly(keyMap, hasQKey);
     }
@@ -195,73 +185,54 @@ class MenuRenderer {
    * Returns { action: 'disconnect' | 'relogin' } so MenuSession can decide
    * whether to close the connection or restart the full login loop.
    *
-   * If goodbyeDef specifies an ansifile that cannot be read, falls back to
-   * the built-in goodbye screen automatically.
-   *
    * @param {MenuDef|null} goodbyeDef  null → render built-in goodbye screen
    * @returns {Promise<{ action: 'disconnect'|'relogin' }>}
    */
   async showGoodbye(goodbyeDef) {
     this.screen.setMode(Screen.FIXED);
-    // Do NOT clear the body (rows 2-24) into the Screen buffer — if there is
-    // ANS art, it writes directly to the wire and must not be overwritten by
-    // a flush of black-space cells.  We only write title and status to the
-    // Screen buffer, flush those two rows, then write the ANS art on top.
+    this.screen.clear(Color.BLACK, Color.BLACK);
 
-    const hasCustomArt = goodbyeDef && goodbyeDef.ansifile &&
-      (() => {
-        const p = this._resolveArtPath(goodbyeDef.ansifile);
-        if (!p) return false;
-        try { fs.accessSync(p); return true; } catch (_) { return false; }
-      })();
-
-    if (hasCustomArt) {
+    if (goodbyeDef && goodbyeDef.ansifile) {
+      // Custom goodbye art
       this._drawTitleBar(goodbyeDef.title || 'GOODBYE', {
         title_fg: Color.BRIGHT_WHITE, title_bg: Color.BLUE,
       });
+      this._renderAnsiArt(goodbyeDef.ansifile);
     } else {
-      // Built-in goodbye: draws into Screen buffer (no raw wire writes)
+      // Built-in goodbye screen
       this._renderBuiltinGoodbye();
     }
 
-    // Status bar into Screen buffer
+    // Disconnect prompt rendered into the status bar — matches menu chrome style
     this.screen.statusBar(
       '  Disconnect? [Y/N]  (N to re-login)',
       Color.BLACK, Color.CYAN
     );
 
-    // Flush Screen buffer first (title row 1 + status row 25 + body if built-in)
     this.screen.flush();
 
-    // Write ANS art directly to wire AFTER flush so it isn't overwritten by
-    // the Screen buffer's body cells.  However, the ANS file may contain
-    // ESC[2J which clears the entire screen including row 25.  Force the
-    // status bar to re-render after the art by marking it dirty again.
-    if (hasCustomArt) {
-      this._renderAnsiArt(goodbyeDef.ansifile);
-      // Re-mark status bar dirty so flush() re-sends it over whatever the art wrote
-      this.screen.statusBar(
-        '  Disconnect? [Y/N]  (N to re-login)',
-        Color.BLACK, Color.CYAN
-      );
-      this.screen.flush();
-    }
+    // Brief pause so the goodbye screen paints fully on the client before
+    // we start listening for a keypress — without this, fast connections
+    // may process a buffered key before the user has seen the screen.
+    await _sleep(120);
 
-    // Wait for Y/y/Enter → disconnect, N/n → re-login.
-    // Use waitKey() directly — the same proven mechanism used by the rest of
-    // the menu system — in a loop that ignores unrecognised keys.
-    while (true) {
-      const key = await this.terminal.waitKey();
-      const k   = (key || '').toLowerCase();
-      if (k === 'y' || k === '\r' || k === 'enter') return { action: 'disconnect' };
-      if (k === 'n')                                  return { action: 'relogin' };
-      // Any other key: redisplay status bar and keep waiting
-      this.screen.statusBar(
-        '  Disconnect? [Y/N]  (N to re-login)',
-        Color.BLACK, Color.CYAN
-      );
-      this.screen.flush();
-    }
+    // Wait for Y/y/Enter → disconnect, N/n → return to login
+    const action = await new Promise((resolve) => {
+      const onKey = (key) => {
+        const k = (key || '').toLowerCase();
+        if (k === 'y' || k === '\r' || k === '\n' || k === 'enter') {
+          this.terminal.removeListener('key', onKey);
+          resolve('disconnect');
+        } else if (k === 'n') {
+          this.terminal.removeListener('key', onKey);
+          resolve('relogin');
+        }
+        // Any other key: ignore, keep waiting
+      };
+      this.terminal.on('key', onKey);
+    });
+
+    return { action };
   }
 
   // ─── Frame rendering ──────────────────────────────────────────────────────
@@ -287,37 +258,35 @@ class MenuRenderer {
   // ─── ANSI art helper ──────────────────────────────────────────────────────
 
   /**
-   * Render a CP437/.ANS or UTF-8 text file into rows 2-24.
-   * Positions the cursor at row 2 col 1 before writing so the art lands
-   * between the title bar and status bar.
+   * Render a CP437 .ans file into rows 2-24 only.
+   * We move the cursor to row 2 col 1 first so the art lands in the right
+   * place between the title and status bars.
    *
-   * Uses prepareAnsiBuffer() from ansi-file.js which handles:
-   *   - Raw CP437 / .ANS files (passed through as-is)
-   *   - UTF-8 / Unicode text files (converted to CP437)
-   *   - SAUCE metadata record stripping
-   *   - CRLF normalisation
+   * The art is rendered via terminal.output.write() (raw bytes) which is
+   * correct for CP437/.ANS file content.
    *
-   * Silently returns (with a console.warn) if the file is missing or unreadable.
+   * NOTE (fast-follow): This method currently assumes the file is already
+   * raw CP437.  To support UTF-8/Unicode art files here too, replace the
+   * readFileSync + output.write block with a call to prepareAnsiBuffer from
+   * packages/engine/src/ansi-file.js — it handles encoding detection, SAUCE
+   * stripping, Unicode→CP437 conversion, and CRLF normalisation in one step.
    */
   _renderAnsiArt(ansifile) {
     const artPath = this._resolveArtPath(ansifile);
     if (!artPath) return;
 
-    let raw;
+    let art;
     try {
-      raw = fs.readFileSync(artPath);
+      art = fs.readFileSync(artPath);
     } catch (e) {
       console.warn(`[MenuRenderer] Cannot read ansifile: ${artPath} — ${e.message}`);
       return;
     }
 
-    const prepared = prepareAnsiBuffer(raw);
-
     // Position cursor at row 2 before injecting art
     this.terminal.writeRaw('\x1b[2;1H');
-    // Write prepared CP437 bytes directly to the output stream,
-    // bypassing the terminal's UTF-8 encoder.
-    this.terminal.output.write(prepared);
+    // Art is raw CP437/ANSI bytes — write as binary, bypassing UTF-8 encoder
+    this.terminal.output.write(art);
   }
 
   _resolveArtPath(ansifile) {

@@ -283,9 +283,10 @@ class GameRouter {
       return;
     }
 
-    // Menu session
+    // Menu session — return its result so the caller (session.js) can
+    // decide whether to disconnect or restart the login loop.
     const session = new MenuSession(this, this.config, this.db, this._loader, this.authMode, this.registry, sessionId);
-    await session.run(terminal, transport);
+    return session.run(terminal, transport);
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────

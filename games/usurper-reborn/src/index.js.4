@@ -12,9 +12,6 @@ const { GameBase, Screen, Color } = require(
 const REMOTE_HOST = 'play.usurper-reborn.net';
 const REMOTE_PORT = 4000;
 
-// Configurable timeframe (in ms) to buffer lines for predictive pagination reduction
-const SMART_PAGINATION_BUFFER_MS = 250;
-
 // Standard CP437 mapping for high ASCII (128 to 255)
 const CP437_HIGH = "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
 
@@ -240,11 +237,15 @@ function applySquashing(originalLine, plainText, prevPlainText) {
     }
     if (!squashedAny) break; // Out of safe punctuation targets
   }
-  
-  // If we STILL couldn't reduce the line to <= 80 characters using safe methods,
-  // we abort entirely and let it wrap normally, per Rule 1.
-  if (r > 0) {
-    return null;
+  if (r <= 0) return buildResult(originalLine, chars);
+
+  // --- TIER 4: Extreme Fallback ---
+  // If the line is an uninterrupted wall of text and MUST be truncated
+  for (let i = chars.length - 1; i >= 0 && r > 0; i--) {
+    if (!chars[i].isRemoved) {
+      chars[i].isRemoved = true;
+      r--;
+    }
   }
 
   return buildResult(originalLine, chars);
@@ -281,49 +282,10 @@ class UsurperReborn extends GameBase {
       let lineBuffer = '';
       let promptTimeout = null;
       let burstTimer = null;
-
-      // When the 50ms prompt timer flushes a partial line (no trailing \n),
-      // its bytes are written to the terminal as a prompt and the cursor
-      // sits mid-row. If the rest of that line then arrives in a later TCP
-      // chunk, the bytes up to the next \n are the visual continuation of
-      // that prompt, not a fresh new line. We track the stripped-plain
-      // prefix so the continuation can be (a) written raw to the terminal
-      // to complete the visible row, (b) merged with the prefix to update
-      // `prevPlainText` correctly for downstream squashing, and (c) counted
-      // as a single printed line for pagination — without going through
-      // queueLine, which would otherwise treat it as a fresh row and poison
-      // the alignment anchor with a meaningless tail fragment like "4  ".
-      let pendingPromptFragment = null; // string | null, ANSI-stripped prefix
-
-      // Box-drawing alignment repair: some servers send box content rows
-      // that are shorter than their surrounding border rows (the closing
-      // ║ ends up visually shifted left of the matching ╗/╣/╝). We track
-      // the right-edge column for each active box, keyed by the left-edge
-      // column of the box, so multiple concurrent boxes (e.g. an outer
-      // menu plus an inner notice) can be repaired independently.
-      // After CP437 mapping the box-drawing chars are single-byte: the
-      // left-edge corners are É/Ì/È, the right-edge corners are »/¹/¼,
-      // the vertical bar is º, and the horizontal dash is Í. The unicode
-      // names stay in the comments for readability.
-      // Map<leftCol:number, rightCol:number>
-      const boxRightEdges = new Map();
-      const BOX_LEFT_CHARS = '\xC9\xCC\xC8\xCB\xCA\xD6\xC7\xD3'; // ╔ ╠ ╚ ╦ ╩ ╓ ╟ ╙ etc.
-      const BOX_RIGHT_CHARS = '\xBB\xB9\xBC\xCB\xCA\xB7\xB6\xBD'; // ╗ ╣ ╝ ╦ ╩ etc.
-      const BOX_DASH = '\xCD'; // ═
-      const BOX_BAR = '\xBA';  // ║
-      
       let linesPrinted = 0;
       let isPaused = false;
       let lastWasEmptyLine = false;
-      let cursorAtStartOfLine = true;
       let prevPlainText = '';
-
-      // Pagination Lock States
-      let allowPagination = false;
-      let seenPaginationUnlock = false;
-
-      let queueTimer = null;
-      let lineBufferQueue = [];
 
       const utf8Decoder = new StringDecoder('utf8');
 
@@ -343,7 +305,6 @@ class UsurperReborn extends GameBase {
         isResolved = true;
         clearTimeout(promptTimeout);
         clearTimeout(burstTimer);
-        clearTimeout(queueTimer);
         this.terminal.removeListener('key', keyHandler);
         if (!socket.destroyed) socket.destroy();
         resolve();
@@ -351,234 +312,13 @@ class UsurperReborn extends GameBase {
 
       socket.on('connect', () => { connected = true; });
 
-      // --- PREDICTIVE PAGINATION PROCESSOR ---
-      const flushQueue = () => {
-        queueTimer = null;
-        if (isPaused) return;
-
-        // 1. Initial compaction & Structural Protection
-        let vLastEmpty = lastWasEmptyLine;
-        let vCursorStart = cursorAtStartOfLine;
-        
-        for (let i = 0; i < lineBufferQueue.length; i++) {
-            let item = lineBufferQueue[i];
-            
-            if (item.isClearScreen) {
-                vCursorStart = true;
-            }
-
-            // A newline is PROTECTED if dropping it would cause text to append horizontally onto a prompt
-            item.isProtectedNewline = false;
-            if (item.isJustNewline && !vCursorStart) {
-                item.isProtectedNewline = true;
-            }
-
-            if (item.isJustNewline) {
-                if (vLastEmpty && !item.isProtectedNewline) {
-                    lineBufferQueue.splice(i, 1);
-                    i--;
-                    continue;
-                }
-                vLastEmpty = true;
-            } else {
-                vLastEmpty = false;
-            }
-
-            if (item.hasNewline) vCursorStart = true;
-            else vCursorStart = false;
-        }
-
-        // 2. Intelligent Pagination Squeeze
-        // See if emitting the entire spooled block will trigger pagination
-        let vLines = linesPrinted;
-        let vAllow = allowPagination;
-        let triggersPagination = false;
-        
-        for (let item of lineBufferQueue) {
-            if (item.unlocksPagination) {
-                vAllow = true;
-                vLines = 0;
-            }
-            if (item.isClearScreen) vLines = 0;
-            if (!item.isPrompt && item.hasNewline) {
-                vLines++;
-                if (vAllow && vLines >= 25) triggersPagination = true;
-            }
-        }
-
-        if (triggersPagination) {
-            // We have a pagination event incoming. Actively drop empty lines from the spool to squeeze it!
-            for (let i = lineBufferQueue.length - 1; i >= 0; i--) {
-                let item = lineBufferQueue[i];
-                if (item.isJustNewline && !item.isProtectedNewline) {
-                    lineBufferQueue.splice(i, 1);
-                    
-                    // Recalculate to see if we saved the pagination event
-                    vLines = linesPrinted;
-                    vAllow = allowPagination;
-                    triggersPagination = false;
-                    for (let testItem of lineBufferQueue) {
-                        if (testItem.unlocksPagination) {
-                            vAllow = true;
-                            vLines = 0;
-                        }
-                        if (testItem.isClearScreen) vLines = 0;
-                        if (!testItem.isPrompt && testItem.hasNewline) {
-                            vLines++;
-                            if (vAllow && vLines >= 25) triggersPagination = true;
-                        }
-                    }
-                    if (!triggersPagination) break; // Saved!
-                }
-            }
-        }
-
-        // 3. Final Emit
-        while (lineBufferQueue.length > 0) {
-            if (isPaused) break; // Retain remaining queue until unpaused
-            
-            let item = lineBufferQueue.shift();
-            lastWasEmptyLine = item.isJustNewline;
-
-            if (item.unlocksPagination) {
-                allowPagination = true;
-                linesPrinted = 0; // Fresh page reset since the MUD just issued its own prompt
-            }
-
-            if (item.isClearScreen) {
-                linesPrinted = 0;
-                cursorAtStartOfLine = true;
-            }
-
-            this.terminal.writeRaw(item.line);
-
-            if (item.hasNewline) {
-                cursorAtStartOfLine = true;
-                // The cursor moved to a fresh line; any prior in-progress
-                // prompt-fragment can no longer be the parent of a future
-                // continuation, so drop the alignment-merge state.
-                pendingPromptFragment = null;
-            } else {
-                cursorAtStartOfLine = false;
-                // We just wrote bytes that left the cursor mid-row. If this
-                // was a prompt-style emit (no trailing newline), remember
-                // its ANSI-stripped text so a later chunk can complete the
-                // visible row and merge into `prevPlainText` correctly. If
-                // the same prompt-fragment is later confirmed to be a real
-                // prompt by the user typing into it, the keypress handler
-                // will clear this state.
-                if (item.isPrompt) {
-                    pendingPromptFragment = item.plainText;
-                } else {
-                    pendingPromptFragment = null;
-                }
-            }
-
-            if (!item.isPrompt && item.hasNewline) {
-                linesPrinted++;
-                
-                clearTimeout(burstTimer);
-                // 500ms inactivity safely indicates the burst of remote text is finished
-                burstTimer = setTimeout(() => { 
-                    linesPrinted = 0; 
-                }, 500);
-                
-                if (allowPagination && linesPrinted >= 25) {
-                    isPaused = true;
-                    socket.pause();
-                    this.terminal.setColor(Color.BRIGHT_WHITE, Color.BLUE);
-                    this.terminal.writeRaw('\r\x1b[K ... hit any key for more ... ');
-                    this.terminal.resetAttrs();
-                }
-            }
-        }
-      };
-
-      // Detect a horizontal box-drawing border row and record its left/right
-      // edge columns. Border rows consist of dash glyphs between corner or
-      // junction glyphs, optionally with leading/trailing whitespace (e.g.
-      // an indented inner box).
-      const recordIfBorderRow = (plain) => {
-        const trimmedStart = plain.search(/\S/);
-        if (trimmedStart < 0) return;
-        const trimmed = plain.replace(/\s+$/, '');
-        const leftIdx = trimmedStart;
-        const rightIdx = trimmed.length - 1;
-        if (rightIdx <= leftIdx) return;
-        if (BOX_LEFT_CHARS.indexOf(plain[leftIdx]) < 0) return;
-        if (BOX_RIGHT_CHARS.indexOf(plain[rightIdx]) < 0) return;
-        // The interior between the two corners should be predominantly the
-        // horizontal dash glyph.
-        let dashCount = 0;
-        const interiorLen = rightIdx - leftIdx - 1;
-        for (let i = leftIdx + 1; i < rightIdx; i++) {
-          if (plain[i] === BOX_DASH) dashCount++;
-        }
-        if (dashCount < interiorLen * 0.8) return;
-        boxRightEdges.set(leftIdx, rightIdx);
-      };
-
-      // Pad a content row whose left ║ matches a tracked box so its closing
-      // ║ sits at the recorded right-edge column. Returns the padded line
-      // and plainText, or null if no repair was needed/possible. ║ is a
-      // non-ANSI byte so locating it via lastIndexOf is safe with respect
-      // to embedded escape sequences.
-      const repairBoxRow = (line, plain) => {
-        if (boxRightEdges.size === 0) return null;
-        const firstNonWs = plain.search(/\S/);
-        if (firstNonWs < 0 || plain[firstNonWs] !== BOX_BAR) return null;
-        const trimmed = plain.replace(/\s+$/, '');
-        const lastIdx = trimmed.length - 1;
-        if (lastIdx <= firstNonWs || plain[lastIdx] !== BOX_BAR) return null;
-        const expectedRight = boxRightEdges.get(firstNonWs);
-        if (expectedRight === undefined) return null;
-        const deficit = expectedRight - lastIdx;
-        if (deficit <= 0) return null;
-        const lastBarInLine = line.lastIndexOf(BOX_BAR);
-        if (lastBarInLine < 0) return null;
-        const pad = ' '.repeat(deficit);
-        const newLine = line.substring(0, lastBarInLine) + pad + line.substring(lastBarInLine);
-        const newPlain = plain.substring(0, lastIdx) + pad + plain.substring(lastIdx);
-        return { line: newLine, plainText: newPlain };
-      };
-
-      const queueLine = (line, isPrompt) => {
+      // --- ADVANCED LINE PROCESSOR ---
+      const emitLine = (line, isPrompt) => {
+        // Regex to match ANSI sequences so we can calculate visible string length
         const ansiRegex = /\x1b\[[0-9;]*[a-zA-Z]/g;
         let plainText = line.replace(ansiRegex, '').replace(/[\r\n]/g, '');
 
-        // Detect the first instance of a prompt so we can unlock pagination later in the stream loop
-        let unlocksPagination = false;
-        if (!seenPaginationUnlock && plainText.toLowerCase().includes('press any key')) {
-            seenPaginationUnlock = true;
-            unlocksPagination = true;
-        }
-
-        // Resolve clear-screen state up front. The reset must precede box
-        // and squash logic so a clear-screen escape that arrives in the
-        // SAME line as a fresh box border (a common case — a redraw burst
-        // begins with `\x1b[2J\x1b[H` immediately followed by the top
-        // ╔═══╗) doesn't wipe the box width we are about to record from
-        // that very same line.
-        const isClearScreen = /\x1b\[(2J|H|1;1H)/.test(line);
-        if (isClearScreen) {
-            prevPlainText = '';
-            pendingPromptFragment = null;
-            boxRightEdges.clear();
-        }
-
-        // Box-drawing alignment repair: pad short ║...║ content rows out to
-        // the most-recently-seen border row's width, then update tracked
-        // widths from any border row we see. Must run BEFORE squashing so
-        // any padding is correctly width-checked against the 80-col cap.
-        if (plainText.indexOf(BOX_BAR) >= 0 || plainText.indexOf(BOX_DASH) >= 0) {
-          const repaired = repairBoxRow(line, plainText);
-          if (repaired) {
-            line = repaired.line;
-            plainText = repaired.plainText;
-          }
-          recordIfBorderRow(plainText);
-        }
-
+        // Whitespace Squashing Logic
         if (plainText.length > 80) {
           const squashed = applySquashing(line, plainText, prevPlainText);
           if (squashed) {
@@ -587,47 +327,43 @@ class UsurperReborn extends GameBase {
           }
         }
         
-        const isBlankText = plainText.trim().length === 0;
+        // Save the visible line layout to inform the alignment of the next iteration
+        prevPlainText = plainText;
 
-        // Update the alignment anchor used by the next squashable line.
-        // Normally this is just the current line's plain text, but when an
-        // earlier prompt-style emit left the cursor mid-row (the previous
-        // server send was a TCP-fragmented partial line, or a real prompt
-        // about to be answered), the visually-prior row is the merge of
-        // that fragment plus this completion. Anchoring on just `plainText`
-        // (e.g. just "4  " when a row got split) would falsely place a
-        // "word at column 0" above the next row and trick the squasher's
-        // leading-whitespace bonus into firing — visibly de-indenting that
-        // next row. Merging keeps the anchor faithful to what the user
-        // actually sees on screen.
-        if (!isClearScreen && !isBlankText) {
-            if (pendingPromptFragment !== null) {
-                prevPlainText = pendingPromptFragment + plainText;
-                pendingPromptFragment = null;
-            } else {
-                prevPlainText = plainText;
-            }
+        // Newline Collapsing (Squeeze Double Empty Lines)
+        const isJustNewline = plainText.length === 0 && line.includes('\n');
+        if (isJustNewline) {
+          if (lastWasEmptyLine) return; // Drop sequential empty lines
+          lastWasEmptyLine = true;
+        } else {
+          lastWasEmptyLine = false;
         }
 
-        const isJustNewline = isBlankText && line.includes('\n');
-        const hasNewline = line.includes('\n');
+        // Clear Screen Detection (Reset Pagination)
+        if (/\x1b\[(2J|H|1;1H)/.test(line)) {
+          linesPrinted = 0;
+        }
 
-        lineBufferQueue.push({
-            line,
-            plainText,
-            isPrompt,
-            isJustNewline,
-            isClearScreen,
-            hasNewline,
-            unlocksPagination
-        });
+        // Send to terminal
+        this.terminal.writeRaw(line);
 
-        // Prompts and clears skip the buffer to preserve instant responsiveness
-        if (isPrompt || isClearScreen) {
-            if (queueTimer) clearTimeout(queueTimer);
-            flushQueue();
-        } else if (!queueTimer) {
-            queueTimer = setTimeout(flushQueue, SMART_PAGINATION_BUFFER_MS);
+        // Pagination (Burst Tracking)
+        if (!isPrompt && line.includes('\n')) {
+          linesPrinted++;
+          
+          // Reset the continuous scroll counter if 200ms pass without a new line
+          clearTimeout(burstTimer);
+          burstTimer = setTimeout(() => { 
+            linesPrinted = 0; 
+          }, 200);
+          
+          if (linesPrinted >= 24) { // Terminal is 25 rows, pause at 24
+            isPaused = true;
+            socket.pause(); // Stop ingesting data from remote host
+            this.terminal.setColor(Color.BRIGHT_WHITE, Color.BLUE);
+            this.terminal.writeRaw('\r\x1b[K ... hit any key for more ... ');
+            this.terminal.resetAttrs();
+          }
         }
       };
 
@@ -640,7 +376,7 @@ class UsurperReborn extends GameBase {
           const line = lineBuffer.substring(0, idx + 1);
           lineBuffer = lineBuffer.substring(idx + 1);
 
-          queueLine(line, false);
+          emitLine(line, false);
           
           // Bail out of processing loop immediately if pagination triggered
           if (isPaused) return; 
@@ -651,7 +387,7 @@ class UsurperReborn extends GameBase {
         if (lineBuffer.length > 0) {
           promptTimeout = setTimeout(() => {
             if (isPaused) return;
-            queueLine(lineBuffer, true);
+            emitLine(lineBuffer, true);
             lineBuffer = '';
           }, 50); // Flush buffer to screen if 50ms pass without a newline
         }
@@ -760,8 +496,7 @@ class UsurperReborn extends GameBase {
           clearTimeout(burstTimer);
           this.terminal.writeRaw('\r\x1b[K'); // Erase the pagination prompt completely
           socket.resume(); // Resume ingesting remote TCP data
-          flushQueue(); // Prioritize any lines held in the spool before the pause
-          processBuffer(); // Process any data that was stranded in the TCP line buffer
+          processBuffer(); // Process any data that was stranded in the line buffer
           return; // Consume the keypress so it doesn't go to the remote server
         }
 
@@ -786,16 +521,13 @@ class UsurperReborn extends GameBase {
         
         sendToSocket(out);
 
-        // Always break continuous output formatting loops if the user sends an execution command
-        if (out === '\r') {
-          lastWasEmptyLine = false; 
-        }
-
         if (echoLocally) {
           if (out === '\x08') {
             this.terminal.writeRaw('\b \b'); 
           } else if (out === '\r') {
             this.terminal.writeRaw('\r\n');
+            // User hitting enter implies starting a new block of text, reset collapse tracker
+            lastWasEmptyLine = false; 
           } else if (out.length === 1 && out.charCodeAt(0) >= 32 && out.charCodeAt(0) <= 126) {
             this.terminal.writeRaw(out); 
           }

@@ -39,6 +39,10 @@ class SynthAuth {
    * @param {string}  [opts.dbPath]        Path to SQLite file
    * @param {string}  [opts.wordlistPath]  Path to EFF wordlist
    * @param {number}  [opts.sessionTtl]    Session TTL in seconds (default 3600)
+   * @param {number}  [opts.maxLoginAttempts]    Failed word attempts before lockout (default 5)
+   * @param {number}  [opts.loginWindowSecs]     Rate-limit window for login attempts (default 60)
+   * @param {number}  [opts.maxRegistrations]    New accounts per IP per window (default 1)
+   * @param {number}  [opts.registerWindowSecs]  Rate-limit window for registrations (default 60)
    */
   constructor(opts = {}) {
     if (!opts.pepper)    throw new Error('SynthAuth: opts.pepper is required');
@@ -49,6 +53,12 @@ class SynthAuth {
 
     this._pepper    = opts.pepper;
     this._synthSalt = opts.synthSalt;
+
+    // Throttle settings — all optional, defaults match original hardcoded values
+    this._maxLoginAttempts   = opts.maxLoginAttempts   || 5;
+    this._loginWindowSecs    = opts.loginWindowSecs    || 60;
+    this._maxRegistrations   = opts.maxRegistrations   || 1;
+    this._registerWindowSecs = opts.registerWindowSecs || 60;
 
     const wordlistPath = opts.wordlistPath
       || path.join(__dirname, 'src', 'eff_large_wordlist.txt');
@@ -67,12 +77,16 @@ class SynthAuth {
    */
   _config(ipAddress = null) {
     return {
-      pepper:    this._pepper,
-      synthSalt: this._synthSalt,
-      db:        this.db,
-      wordList:  this.wordList,
-      sessions:  this.sessions,
+      pepper:              this._pepper,
+      synthSalt:           this._synthSalt,
+      db:                  this.db,
+      wordList:            this.wordList,
+      sessions:            this.sessions,
       ipAddress,
+      maxLoginAttempts:    this._maxLoginAttempts,
+      loginWindowSecs:     this._loginWindowSecs,
+      maxRegistrations:    this._maxRegistrations,
+      registerWindowSecs:  this._registerWindowSecs,
     };
   }
 

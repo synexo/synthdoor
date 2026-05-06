@@ -91,9 +91,13 @@ async function main() {
 
     initAuth({
       pepper,
-      synthSalt:    synthSaltBuf,
-      dbPath:       authDbPath,
+      synthSalt:           synthSaltBuf,
+      dbPath:              authDbPath,
       wordlistPath,
+      maxLoginAttempts:    config.getInt('auth_max_login_attempts',   5),
+      loginWindowSecs:     config.getInt('auth_login_window_secs',   60),
+      maxRegistrations:    config.getInt('auth_max_registrations',    1),
+      registerWindowSecs:  config.getInt('auth_register_window_secs', 60),
     });
 
     logger.info(`[Auth] SynthAuth initialised. DB: ${authDbPath}`);

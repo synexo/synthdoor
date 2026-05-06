@@ -11,12 +11,16 @@
  *
  * Config object:
  * {
- *   pepper:    string,
- *   synthSalt: Buffer,
- *   db:        AuthDB,
- *   wordList:  WordList,
- *   sessions:  SessionStore,
- *   ipAddress: string|null,
+ *   pepper:               string,
+ *   synthSalt:            Buffer,
+ *   db:                   AuthDB,
+ *   wordList:             WordList,
+ *   sessions:             SessionStore,
+ *   ipAddress:            string|null,
+ *   maxLoginAttempts:     number,   // failed attempts before lockout (default 5)
+ *   loginWindowSecs:      number,   // rate-limit window for logins (default 60)
+ *   maxRegistrations:     number,   // new accounts per IP per window (default 1)
+ *   registerWindowSecs:   number,   // rate-limit window for registrations (default 60)
  * }
  */
 
@@ -36,10 +40,30 @@ const { isReservedUsername } = require(
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_LOGIN_ATTEMPTS       = 5;
-const RECOVER_REMINDER_AFTER   = 3;
-const MAX_CONFIRM_ATTEMPTS     = 3;
 const RECOVERY_CODE_RE         = /^[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}$/;
+
+// Hardcoded defaults — overridden by values in the config object when provided.
+// These match the original values so behaviour is unchanged unless configured.
+const DEFAULT_MAX_LOGIN_ATTEMPTS     = 5;
+const DEFAULT_RECOVER_REMINDER_AFTER = 3;
+const DEFAULT_MAX_CONFIRM_ATTEMPTS   = 3;
+const DEFAULT_LOGIN_WINDOW_SECS      = 60;
+const DEFAULT_MAX_REGISTRATIONS      = 1;
+const DEFAULT_REGISTER_WINDOW_SECS   = 60;
+
+/** Extract throttle settings from config with safe defaults. */
+function throttle(config) {
+  const max     = config.maxLoginAttempts   || DEFAULT_MAX_LOGIN_ATTEMPTS;
+  const remind  = Math.max(1, Math.floor(max * 0.6)); // remind at ~60% of max
+  return {
+    maxLoginAttempts:   max,
+    recoverReminderAt:  remind,
+    maxConfirmAttempts: config.maxConfirmAttempts || DEFAULT_MAX_CONFIRM_ATTEMPTS,
+    loginWindowSecs:    config.loginWindowSecs    || DEFAULT_LOGIN_WINDOW_SECS,
+    maxRegistrations:   config.maxRegistrations   || DEFAULT_MAX_REGISTRATIONS,
+    registerWindowSecs: config.registerWindowSecs || DEFAULT_REGISTER_WINDOW_SECS,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,10 +177,11 @@ async function entryFlow(dialogue, config) {
  */
 async function guestFlow(dialogue, config) {
   const { db, wordList, sessions, ipAddress } = config;
+  const t = throttle(config);
 
   // Rate-limit guest registrations same as normal registrations
   if (ipAddress) {
-    const rl = db.rateLimit(`register:${ipAddress}`, 1, 60);
+    const rl = db.rateLimit(`register:${ipAddress}`, t.maxRegistrations, t.registerWindowSecs);
     if (!rl.allowed) {
       dialogue.send('Too many registration attempts. Please try again in a minute.');
       return { success: false, reason: 'rate_limited' };
@@ -244,6 +269,7 @@ async function guestFlow(dialogue, config) {
 
 async function loginFlow(dialogue, config, prefilledUsername = null) {
   const { db, wordList, ipAddress, sessions } = config;
+  const t = throttle(config);
 
   let rawUsername = prefilledUsername;
 
@@ -260,9 +286,9 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
 
   let failedAttempts = 0;
 
-  while (failedAttempts < MAX_LOGIN_ATTEMPTS) {
+  while (failedAttempts < t.maxLoginAttempts) {
 
-    const showRecoverHint = failedAttempts >= RECOVER_REMINDER_AFTER;
+    const showRecoverHint = failedAttempts >= t.recoverReminderAt;
     const promptSuffix    = showRecoverHint
       ? ' (or "recover" to use your recovery key)'
       : ' or "recover"';
@@ -278,7 +304,7 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
     // ── Recovery code entered directly (XXXX-XXXX) ─────────────────────────
     if (looksLikeRecoveryCode(trimmed)) {
       if (ipAddress) {
-        const rl = db.rateLimit(`login:${ipAddress}`, MAX_LOGIN_ATTEMPTS, 60);
+        const rl = db.rateLimit(`login:${ipAddress}`, t.maxLoginAttempts, t.loginWindowSecs);
         if (!rl.allowed) {
           dialogue.send('Too many login attempts. Please try again in a minute.');
           return { success: false, reason: 'rate_limited' };
@@ -311,7 +337,7 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
 
       if (decoded) {
         const rl = ipAddress
-          ? db.rateLimit(`register:${ipAddress}`, 1, 60)
+          ? db.rateLimit(`register:${ipAddress}`, t.maxRegistrations, t.registerWindowSecs)
           : { allowed: true };
 
         if (!rl.allowed) {
@@ -342,7 +368,7 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
       dialogue.send('');
       dialogue.send('Invalid identity. Contemplate the songs and pictures for your words and try again.');
       dialogue.send('');
-      if (failedAttempts >= RECOVER_REMINDER_AFTER) {
+      if (failedAttempts >= t.recoverReminderAt) {
         dialogue.send('  Tip: type "recover" to use your recovery key instead.');
         dialogue.send('');
       }
@@ -374,7 +400,7 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
     }
 
     if (ipAddress) {
-      const rl = db.rateLimit(`login:${ipAddress}`, MAX_LOGIN_ATTEMPTS, 60);
+      const rl = db.rateLimit(`login:${ipAddress}`, t.maxLoginAttempts, t.loginWindowSecs);
       if (!rl.allowed) {
         dialogue.send('Too many login attempts. Please try again in a minute.');
         return { success: false, reason: 'rate_limited' };
@@ -435,7 +461,7 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
     dialogue.send('');
     dialogue.send('Invalid identity. Contemplate the songs and pictures for your words and try again.');
     dialogue.send('');
-    if (failedAttempts >= RECOVER_REMINDER_AFTER && failedAttempts < MAX_LOGIN_ATTEMPTS) {
+    if (failedAttempts >= t.recoverReminderAt && failedAttempts < t.maxLoginAttempts) {
       dialogue.send('  Tip: type "recover" to use your recovery key instead.');
       dialogue.send('');
     }
@@ -451,9 +477,10 @@ async function loginFlow(dialogue, config, prefilledUsername = null) {
 
 async function registrationFlow(dialogue, config, prefilled = null) {
   const { db, wordList, ipAddress, sessions } = config;
+  const t = throttle(config);
 
   if (!prefilled && ipAddress) {
-    const rl = db.rateLimit(`register:${ipAddress}`, 1, 60);
+    const rl = db.rateLimit(`register:${ipAddress}`, t.maxRegistrations, t.registerWindowSecs);
     if (!rl.allowed) {
       dialogue.send('Too many registration attempts. Please try again in a minute.');
       return { success: false, reason: 'rate_limited' };
@@ -533,7 +560,7 @@ async function registrationFlow(dialogue, config, prefilled = null) {
   let confirmed       = false;
   let confirmAttempts = 0;
 
-  while (!confirmed && confirmAttempts < MAX_CONFIRM_ATTEMPTS) {
+  while (!confirmed && confirmAttempts < t.maxConfirmAttempts) {
     const confirmInput = await dialogue.prompt('Enter your code words to confirm registration: ');
     const confirmWords = extractCodewords(confirmInput.trim());
 
@@ -597,12 +624,13 @@ async function registrationFlow(dialogue, config, prefilled = null) {
 
 async function recoveryFlow(dialogue, config, rawUsername) {
   const { db, wordList, sessions, ipAddress } = config;
+  const t = throttle(config);
 
   let attempts = 0;
 
-  while (attempts < MAX_LOGIN_ATTEMPTS) {
+  while (attempts < t.maxLoginAttempts) {
     if (ipAddress) {
-      const rl = db.rateLimit(`login:${ipAddress}`, MAX_LOGIN_ATTEMPTS, 60);
+      const rl = db.rateLimit(`login:${ipAddress}`, t.maxLoginAttempts, t.loginWindowSecs);
       if (!rl.allowed) {
         dialogue.send('Too many attempts. Please try again in a minute.');
         return { success: false, reason: 'rate_limited' };
@@ -620,7 +648,7 @@ async function recoveryFlow(dialogue, config, rawUsername) {
     if (!recovered) {
       attempts++;
       dialogue.send('Recovery code invalid.');
-      if (attempts < MAX_LOGIN_ATTEMPTS) {
+      if (attempts < t.maxLoginAttempts) {
         dialogue.send('');
         continue;
       }
@@ -644,7 +672,7 @@ async function recoveryFlow(dialogue, config, rawUsername) {
     let confirmed  = false;
     let reAttempts = 0;
 
-    while (!confirmed && reAttempts < MAX_CONFIRM_ATTEMPTS) {
+    while (!confirmed && reAttempts < t.maxConfirmAttempts) {
       const reInput = await dialogue.prompt('Enter your code words to proceed: ');
       const reWords = extractCodewords(reInput.trim());
 

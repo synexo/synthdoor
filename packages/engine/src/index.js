@@ -20,6 +20,7 @@ const DB          = require(path.join(dir, 'database'));
 const Multiplayer = require(path.join(dir, 'multiplayer'));
 const GameBase    = require(path.join(dir, 'game-base'));
 const Utils       = require(path.join(dir, 'utils'));
+const AnsiFile    = require(path.join(dir, 'ansi-file'));
 const { Color, Attr, CP437 } = require(path.join(dir, 'constants'));
 
 // Sanity check — will appear in server logs if Utils failed to load
@@ -38,6 +39,7 @@ module.exports = {
   Multiplayer,
   GameBase,
   Utils,
+  AnsiFile,
   Color,
   Attr,
   CP437,
