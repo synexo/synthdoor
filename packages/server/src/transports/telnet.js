@@ -11,6 +11,12 @@
  *   IAC DO   TTYPE     — ask client to send terminal type
  *
  * Auth is handled by session.js (shared with WebSocketTransport).
+ *
+ * Subnegotiation overflow protection
+ * ──────────────────────────────────
+ * TelnetFilterStream caps the IAC-SB body at SB_BUF_MAX bytes and emits
+ * 'sb-overflow' if a peer attempts to send more. We treat that as a hostile
+ * peer and destroy the socket immediately.
  */
 
 const net  = require('net');
@@ -72,6 +78,12 @@ class TelnetTransport {
 
     // TelnetFilterStream with the socket as source — auto-pipes incoming data
     const filtered = new TelnetFilterStream(socket);
+
+    // Hostile or buggy peer flooding subnegotiation: drop the connection.
+    filtered.on('sb-overflow', ({ limit }) => {
+      getLogger().warn(`[Telnet] SB overflow from ${remoteIP} (>${limit} bytes) — closing`);
+      socket.destroy();
+    });
 
     const terminal = new Terminal({
       output:    socket,

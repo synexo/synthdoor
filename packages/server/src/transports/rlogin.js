@@ -9,7 +9,7 @@
  *   Server sends: \0  (acknowledgment)
  *
  * ─── Naive mode ───────────────────────────────────────────────────────────
- *   ClientUser : Username (trusted as-is)
+ *   ClientUser : Username (validated as alphanumeric 1..13 chars, then trusted)
  *   ServerUser : If a valid game name → launch that game; else → game selection
  *   TermType   : Ignored
  *
@@ -33,6 +33,13 @@
  *     "Alice" "meteoroid" "ANSI"     → auth flow, then launch meteoroid
  *     "Alice" "Y2Z1-X53H" "ANSI"    → silent login, then game selection
  *     "Alice" "Y2Z1-X53H" "meteoroid" → silent login, then launch meteoroid
+ *
+ * ─── Handshake hardening ──────────────────────────────────────────────────
+ * RFC 1282 prescribes four NUL-delimited fields and nothing more. A peer
+ * that connects and never sends NULs would, with an unbounded reader, grow
+ * the receive buffer to memory exhaustion. readRloginHandshake() caps the
+ * accumulated buffer at HANDSHAKE_MAX bytes and rejects the connection if
+ * exceeded. The 5-second timeout remains as the second line of defence.
  */
 
 const netModule    = require('net');
@@ -43,9 +50,14 @@ const {
   runInteractiveLogin,
 } = require('../auth-flow');
 const { getLogger } = require('../logger');
-const { isSysopAllowed } = require('../reserved');
+const { isSysopAllowed, isValidNaiveUsername, NAIVE_MAX_USERNAME_LEN } = require('../reserved');
 
 const { RECOVERY_CODE_RE } = require(pathModule.join(__dirname, '..', '..', '..', 'synth-auth', 'index.js'));
+
+// Handshake buffer cap. The four fields together fit comfortably below 1 KiB
+// in any legitimate rlogin handshake; 4 KiB gives room for unusual termtypes
+// and stays well below any session memory budget.
+const HANDSHAKE_MAX = 4 * 1024;
 
 class RloginTransport {
   /**
@@ -111,7 +123,18 @@ class RloginTransport {
   // ─── Naive mode ──────────────────────────────────────────────────────────
 
   async _handleNaive(terminal, socket, clientUser, serverUser, ipAddress) {
-    const username = (clientUser || 'guest').trim() || 'guest';
+    // Default to 'guest' for empty clientUser, matching the previous behaviour.
+    const candidate = (clientUser || 'guest').trim() || 'guest';
+
+    // Structural validation. Unlike telnet's interactive prompt, rlogin's
+    // handshake is single-shot — there is no retry. Reject and disconnect.
+    if (!isValidNaiveUsername(candidate)) {
+      getLogger().warn(`[rlogin/naive] Rejected invalid username "${candidate}" from ${ipAddress || 'unknown'} (must be 1-${NAIVE_MAX_USERNAME_LEN} alphanumerics)`);
+      socket.destroy();
+      return;
+    }
+
+    const username = candidate;
 
     if (!isSysopAllowed(username, this.config)) {
       getLogger().warn(`[rlogin/naive] Blocked reserved username attempt: "${username}" from ${ipAddress || 'unknown'}`);
@@ -249,36 +272,79 @@ class RloginTransport {
 }
 
 // ─── rlogin handshake reader ──────────────────────────────────────────────
+//
+// Reads bytes from `socket` until four NULs have been seen, then parses the
+// three intervening fields (clientUser, serverUser, termType). Resolves to
+// null on:
+//   • 5-second timeout without all four NULs
+//   • accumulated buffer exceeding HANDSHAKE_MAX bytes (peer abuse)
+//   • the socket emitting an error or closing early
+//
+// The 'data' handler is removed in every termination path so the listener
+// is never left dangling on the socket.
 function readRloginHandshake(socket) {
   return new Promise((resolve) => {
-    let buf = Buffer.alloc(0);
+    const chunks = [];
+    let total = 0;
+    let resolved = false;
+
+    const finish = (result) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      socket.removeListener('data',  handler);
+      socket.removeListener('error', onError);
+      socket.removeListener('close', onClose);
+      resolve(result);
+    };
 
     const timeout = setTimeout(() => {
-      socket.removeListener('data', handler);
-      resolve(null);
+      getLogger().info(`[rlogin] handshake timeout from ${socket.remoteAddress || 'unknown'}`);
+      finish(null);
     }, 5000);
 
-    const handler = (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
+    const onError = (err) => {
+      getLogger().info(`[rlogin] handshake socket error from ${socket.remoteAddress || 'unknown'}: ${err.message}`);
+      finish(null);
+    };
 
-      // Find four null terminators
+    const onClose = () => {
+      finish(null);
+    };
+
+    const handler = (chunk) => {
+      // Bound the receive buffer. RFC 1282 handshakes are tiny — 4 KiB is
+      // far more than any legitimate client sends.
+      if (total + chunk.length > HANDSHAKE_MAX) {
+        getLogger().warn(`[rlogin] handshake oversize from ${socket.remoteAddress || 'unknown'} (>${HANDSHAKE_MAX} bytes) — closing`);
+        finish(null);
+        return;
+      }
+      chunks.push(chunk);
+      total += chunk.length;
+
+      // Search across the concatenated bytes for four NULs. We do the search
+      // on the latest snapshot rather than per-chunk so a NUL split across
+      // two chunks is found correctly. The cost is O(total) per chunk, which
+      // is fine for a 4 KiB cap.
+      const buf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total);
+
       const nulls = [];
       for (let i = 0; i < buf.length && nulls.length < 4; i++) {
         if (buf[i] === 0) nulls.push(i);
       }
 
       if (nulls.length >= 4) {
-        clearTimeout(timeout);
-        socket.removeListener('data', handler);
-
         const clientUser = buf.slice(nulls[0] + 1, nulls[1]).toString('ascii');
         const serverUser = buf.slice(nulls[1] + 1, nulls[2]).toString('ascii');
         const termType   = buf.slice(nulls[2] + 1, nulls[3]).toString('ascii');
-        resolve({ clientUser, serverUser, termType });
+        finish({ clientUser, serverUser, termType });
       }
     };
 
-    socket.on('data', handler);
+    socket.on('data',  handler);
+    socket.on('error', onError);
+    socket.on('close', onClose);
   });
 }
 

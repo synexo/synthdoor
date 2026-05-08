@@ -20,6 +20,14 @@
  * Config keys read from synthdoor.conf:
  *   web_port              (default 8080)
  *   web_max_idle_minutes  (default 10)
+ *   trust_proxy           (default: disabled — see remote-ip.js)
+ *
+ * Reverse-proxy / X-Forwarded-For
+ * ───────────────────────────────
+ * By default we ignore X-Forwarded-For and use the immediate socket peer
+ * as the client IP. Operators deploying behind nginx, Cloudflare, etc.
+ * MUST set `trust_proxy` in synthdoor.conf or rate limiters will see the
+ * proxy IP for every connection. See remote-ip.js for syntax.
  */
 
 const fs   = require('fs');
@@ -33,6 +41,7 @@ const { Terminal } = require(
 );
 const { TelnetFilterStream, sleep } = require('./telnet-filter');
 const { SBANSIEncoder } = require(path.join(__dirname, 'sbansi-encoder'));
+const { resolveClientIp, loadTrustPolicy } = require('./remote-ip');
 
 // Minimal Telnet negotiation for browser clients:
 //   IAC WILL ECHO  — server echoes (client must not local-echo)
@@ -70,6 +79,11 @@ class WebSocketTransport {
     this.router   = router;
     this.authMode = authMode || 'naive';
     this.registry = registry || null;
+
+    // Resolve the proxy-trust policy once at construction time. Logged on
+    // creation rather than per-connection so it appears with the rest of
+    // the server startup banner.
+    this._trustPolicy = loadTrustPolicy(config, getLogger());
 
     this._server = null;
     this._wss    = null;
@@ -142,7 +156,10 @@ class WebSocketTransport {
   // ─── WebSocket connection handler ─────────────────────────────────────────
 
   async _handleConnection(ws, req) {
-    const remoteIP = req.socket?.remoteAddress || 'unknown';
+    // Resolve the real client IP. With trust_proxy unset (the default),
+    // this is just req.socket.remoteAddress. With it configured, we honor
+    // X-Forwarded-For from trusted upstreams and reject spoofed entries.
+    const remoteIP = resolveClientIp(req, this._trustPolicy) || 'unknown';
 
     getLogger().info(`[WebSocket] ${remoteIP} connected`);
 
@@ -266,6 +283,15 @@ class WebSocketTransport {
 
     // TelnetFilterStream strips IAC sequences; pass null source and feed manually.
     const filtered = new TelnetFilterStream(null);
+
+    // Subnegotiation overflow: a peer that opens IAC SB and never closes it
+    // could grow the filter's internal buffer. The filter caps that and
+    // emits 'sb-overflow' when hit. Treat it as a hostile peer and close.
+    filtered.on('sb-overflow', ({ limit }) => {
+      getLogger().warn(`[WebSocket] SB overflow from ${remoteIP} (>${limit} bytes) — closing`);
+      try { ws.close(); } catch (_) {}
+    });
+
     rawInput.on('data',  chunk => filtered.write(chunk));
     rawInput.on('end',   ()    => filtered.end());
     rawInput.on('error', err   => filtered.emit('error', err));
