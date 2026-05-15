@@ -450,33 +450,7 @@ class UsurperReborn extends GameBase {
                 cursorAtStartOfLine = true;
             }
 
-            // Wrap-collision avoidance: when a line's visible width is
-            // exactly 80, the terminal's eager-wrap behaviour will already
-            // have advanced the cursor to column 1 of the next row by the
-            // time we reach the trailing \r\n. Sending the explicit \r\n
-            // anyway would advance another row, producing a stray blank
-            // row beneath every full-width line.
-            //
-            // The padding inside repairBoxRow targets the previously-seen
-            // box border's right edge, which is commonly column 80 for
-            // boxes that hug the screen edge (Usurper's Welcome and main
-            // menus, for instance). Squashed lines (applySquashing) can
-            // also land at exactly 80. Top/bottom borders sent by the
-            // server at their natural 80-char width fall in the same
-            // bucket. All three cases are handled uniformly here.
-            //
-            // We strip only the trailing CR / LF bytes; `item.hasNewline`
-            // is left intact so the downstream state machine
-            // (cursorAtStartOfLine, prompt-fragment, line counting,
-            // pagination) still treats the line as ending a row — which
-            // it does, just via the wrap instead of the explicit CRLF.
-            let emit = item.line;
-            if (item.hasNewline &&
-                !item.isPrompt &&
-                item.plainText.length === 80) {
-                emit = emit.replace(/\r?\n$/, '').replace(/\r$/, '');
-            }
-            this.terminal.writeRaw(emit);
+            this.terminal.writeRaw(item.line);
 
             if (item.hasNewline) {
                 cursorAtStartOfLine = true;

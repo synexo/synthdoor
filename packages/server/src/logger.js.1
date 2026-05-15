@@ -194,38 +194,12 @@ function dateStamp(date) {
 
 let _instance = null;
 
-// DIAGNOSTIC INSTRUMENTATION (temporary — to track down the "Logger not
-// initialised" bug that fires mid-session without a hot-reload). Each time
-// this file is loaded into a fresh module record, we generate a unique
-// record ID and stamp it. createLogger() and getLogger() both log which
-// record they're acting on, and the throw path also dumps every require.cache
-// entry whose path mentions 'logger' so we can see if multiple records exist.
-const _RECORD_ID = `logger-rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-process.stderr.write(`[Logger diag] module record loaded id=${_RECORD_ID} __filename=${__filename}\n`);
-
 /**
  * Return the shared logger instance.
  * Throws if createLogger() has not been called yet.
  */
 function getLogger() {
-  if (!_instance) {
-    // Diagnostic: dump every cache entry containing 'logger' so we can see
-    // whether multiple module records of this file exist in the process.
-    const keys = Object.keys(require.cache || {}).filter(k => /logger\.js$/i.test(k));
-    const details = keys.map(k => {
-      const mod = require.cache[k];
-      const hasInst = mod && mod.exports && mod.exports.__diagInstance !== undefined
-        ? `instance=${mod.exports.__diagInstance ? 'SET' : 'NULL'}`
-        : 'instance=?';
-      return `  ${k} ${hasInst}`;
-    }).join('\n');
-    const msg =
-      `[Logger] Logger not initialised. Call createLogger() first.\n` +
-      `  this record id: ${_RECORD_ID}\n` +
-      `  this __filename: ${__filename}\n` +
-      `  require.cache entries matching logger.js:\n${details || '  (none)'}`;
-    throw new Error(msg);
-  }
+  if (!_instance) throw new Error('[Logger] Logger not initialised. Call createLogger() first.');
   return _instance;
 }
 
@@ -235,14 +209,7 @@ function getLogger() {
  */
 function createLogger(opts) {
   _instance = new Logger(opts);
-  process.stderr.write(`[Logger diag] createLogger() called on record id=${_RECORD_ID}\n`);
   return _instance;
 }
 
-// Diagnostic accessor — lets getLogger()'s throw path peek at the
-// instance state of OTHER cached records of this file. Returns truthy
-// if this record's _instance has been set.
 module.exports = { createLogger, getLogger, Logger };
-Object.defineProperty(module.exports, '__diagInstance', {
-  get: () => (_instance ? true : false),
-});

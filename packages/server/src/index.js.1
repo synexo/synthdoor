@@ -113,72 +113,48 @@ async function main() {
   const menusDir = config.get('menus_dir', path.resolve(__dirname, '../../../config/menus'));
 
   // ─── Session Registry ─────────────────────────────────────────────────────
-  // Pass the logger so that stale-session evictions are visible in the log
-  // file the same way LOGIN/LOGOFF are. The registry runs a 30-second sweep
-  // for half-open / abruptly-killed connections that the disconnect path
-  // never finalised; the activity timeout is 5 minutes by default.
-  const registry = new SessionRegistry({ logger });
+  const registry = new SessionRegistry();
 
   const router = new GameRouter(config, db, gamesDir, menusDir, logger, authMode, registry);
   router.discover();
 
   const transports = [];
 
-  // ─── Bind address resolution ─────────────────────────────────────────────
-  //
-  // bind_address controls which network interface(s) the listening sockets
-  // attach to. Each transport can override the global setting with its own
-  // {telnet,rlogin,web}_bind_address value.
-  //
-  //   '0.0.0.0' (default) — all IPv4 interfaces
-  //   '::'                — all IPv6 interfaces (and v4 via mapped, on dual stack)
-  //   '127.0.0.1'         — loopback only (recommended for the WebSocket port
-  //                          when behind a reverse proxy on the same host)
-  //   '192.0.2.5'         — a specific NIC on a multi-homed host
-  //
-  // We resolve once here so each transport's startup banner can include the
-  // address it actually bound to.
-  const globalBindAddress = config.get('bind_address', '0.0.0.0');
-  const telnetBindAddress = config.get('telnet_bind_address', globalBindAddress);
-  const rloginBindAddress = config.get('rlogin_bind_address', globalBindAddress);
-  const webBindAddress    = config.get('web_bind_address',    globalBindAddress);
-
   // ─── Telnet ───────────────────────────────────────────────────────────────
   if (config.getBool('telnet_enabled', true)) {
     const telnet = new TelnetTransport(config, db, router, authMode, registry);
     const port   = config.getInt('telnet_port', 2323);
-    telnet.listen(port, telnetBindAddress);
+    telnet.listen(port);
     transports.push(telnet);
-    logger.info(`[Telnet] Listening on ${telnetBindAddress}:${port} (${authMode} mode)`);
+    logger.info(`[Telnet] Listening on port ${port} (${authMode} mode)`);
   }
 
   // ─── rlogin ───────────────────────────────────────────────────────────────
   if (config.getBool('rlogin_enabled', false)) {
     const rlogin = new RloginTransport(config, db, router, authMode, registry);
     const port   = config.getInt('rlogin_port', 513);
-    rlogin.listen(port, rloginBindAddress);
+    rlogin.listen(port);
     transports.push(rlogin);
-    logger.info(`[rlogin] Listening on ${rloginBindAddress}:${port} (${authMode} mode)`);
+    logger.info(`[rlogin] Listening on port ${port} (${authMode} mode)`);
   }
 
   // ─── WebSocket  ───────────────────────────────────────────────────────────
   if (config.getBool('web_enabled', true)) {
     const ws   = new WebSocketTransport(config, db, router, authMode, registry);
     const port = config.getInt('web_port', 8080);
-    ws.listen(port, webBindAddress);
+    ws.listen(port);
     transports.push(ws);
-    logger.info(`[WebSocket] UI + direct engine on ${webBindAddress}:${port} (${authMode} mode)`);
+    logger.info(`[WebSocket] UI + direct engine on port ${port} (${authMode} mode)`);
   }
 
   logger.info('[Server] All transports active. Ctrl+C to stop.');
-  process.on('SIGINT',  () => shutdown(transports, db, scheduler, logger, registry));
-  process.on('SIGTERM', () => shutdown(transports, db, scheduler, logger, registry));
+  process.on('SIGINT',  () => shutdown(transports, db, scheduler, logger));
+  process.on('SIGTERM', () => shutdown(transports, db, scheduler, logger));
 }
 
-function shutdown(transports, db, scheduler, logger, registry) {
+function shutdown(transports, db, scheduler, logger) {
   (logger || console).info('\n[Server] Shutting down…');
   for (const t of transports) { try { t.close(); } catch (_) {} }
-  if (registry) { try { registry.stop(); } catch (_) {} }
   if (scheduler) scheduler.stop();
   db.close();
   if (logger) logger.close();

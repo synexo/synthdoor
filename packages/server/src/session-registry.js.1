@@ -12,59 +12,69 @@
  * Liveness model
  * ──────────────
  * The registry depends on transports calling remove(id) when a session
- * ends. In ordinary disconnects (clean FIN, kick, server-initiated
- * close) that's what happens. But half-open TCP, abruptly-killed
- * WebSockets, NAT box dropouts, and uncaught exceptions in route() can
- * all leave entries stranded — the disconnect callback never fires and
- * the row sits in Who's Online forever.
+ * ends. In ordinary disconnects (clean FIN, idle timeout, kick) that's
+ * what happens. But half-open TCP, abruptly-killed WebSockets, NAT box
+ * dropouts, and uncaught exceptions in route() can all leave entries
+ * stranded — the disconnect callback never fires and the row sits in
+ * Who's Online forever.
  *
- * To deal with that, the registry uses one and only one signal:
+ * To deal with that:
  *
- *   isLive callback
- *     At registration the transport supplies a zero-arg function that
- *     returns true iff the underlying socket is still in a connected
- *     state. Examples:
- *       telnet/rlogin : () => !socket.destroyed
- *       websocket     : () => ws.readyState === 1   (i.e. OPEN)
+ *   1. ping(id)
+ *      Every session has a lastSeenAt timestamp that the transport
+ *      bumps on activity (incoming bytes, navigation, user keypress).
  *
- *     The sweep and list() probe this on every entry. If isLive() ever
- *     returns false, the entry is evicted and its disconnect callback
- *     is invoked for cleanup.
+ *   2. isLive callback
+ *      At registration the transport supplies a zero-arg function that
+ *      returns true if the underlying socket is still live (e.g.
+ *      `() => !socket.destroyed`). The sweep calls it on every entry.
  *
- * IMPORTANT: the registry NEVER evicts a session for being idle. A
- * player paused in MRC waiting for someone to talk, or thinking in a
- * strategy game, or away from the keyboard, is not stale — they're
- * connected. Idle disconnects, if ever desired, must be implemented
- * by a separate per-transport policy with explicit opt-in, NOT by this
- * registry. The previous version of this file enforced a 5-minute
- * activity timeout that disconnected live MRC sessions. That was a
- * bug; the timeout has been removed.
+ *   3. Periodic sweep
+ *      A setInterval-driven pass evicts entries whose isLive() returns
+ *      false, OR whose lastSeenAt is older than STALE_AFTER_MS. Either
+ *      condition catches the cases the disconnect handler missed.
  *
- * Informational fields (lastSeenAt, idleSec) are still tracked so the
- * sysop panel can display "idle for N seconds" — but those fields are
- * NEVER used to drive eviction. Only isLive() does that.
+ *   4. Read-time filter
+ *      list() applies the same checks before returning, so even between
+ *      sweeps stale rows never appear in Who's Online.
+ *
+ * Transports that don't supply isLive (e.g. tests) get the time-based
+ * cutoff only — still safer than the previous "never expire" behaviour.
  */
 
 const { randomBytes } = require('crypto');
 
-// How often the background sweep runs. The sweep only calls isLive()
-// on each entry; it doesn't apply any time-based cutoff.
+// Session is considered stale if no activity for this long. Tuned to be
+// well above any normal in-game idle gap (a player thinking about a move
+// is fine) but low enough that ghosts disappear from Who's Online within
+// a few minutes.
+//
+// The sweep below pings live sessions every 60s, so a real connection
+// can never be reaped by accident — it would have to fall completely
+// silent for 5 minutes, which a healthy TCP socket does not.
+const STALE_AFTER_MS = 5 * 60 * 1000;
+
+// How often the background sweep runs.
 const SWEEP_INTERVAL_MS = 30 * 1000;
 
 class SessionRegistry {
   /**
    * @param {object} [opts]
+   * @param {number} [opts.staleAfterMs]    Activity gap before eviction (default 5 min)
    * @param {number} [opts.sweepIntervalMs] Sweep cadence (default 30 s)
    * @param {{warn:Function,info:Function}} [opts.logger]
    */
   constructor(opts = {}) {
     this._sessions       = new Map();
+    this._staleAfterMs   = opts.staleAfterMs   || STALE_AFTER_MS;
     this._sweepIntervalMs = opts.sweepIntervalMs || SWEEP_INTERVAL_MS;
     this._logger         = opts.logger || null;
 
-    // Start a background sweep. unref() so on graceful shutdown the
-    // timer doesn't keep node running if everything else has stopped.
+    // Start a background sweep. Allowed to keep the process alive — the
+    // server's shutdown() calls stop().
     this._sweepTimer = setInterval(() => this._sweep(), this._sweepIntervalMs);
+    // unref() so that on graceful shutdown the timer doesn't keep node
+    // running if everything else has stopped.
     if (this._sweepTimer.unref) this._sweepTimer.unref();
   }
 
@@ -79,11 +89,9 @@ class SessionRegistry {
    * @param {string}   opts.ipAddress   Remote IP (may be null)
    * @param {Function} opts.disconnect  Callable that terminates the connection
    * @param {Function} [opts.isLive]    Optional zero-arg liveness probe.
-   *                                    Returns true if the socket is still
-   *                                    connected. If omitted, the entry is
-   *                                    treated as always-live and can only
-   *                                    be removed by an explicit remove()
-   *                                    or kick() call.
+   *                                    Return true if the socket is still
+   *                                    connected. If omitted, only the
+   *                                    activity timeout applies.
    * @returns {string}  Session ID
    */
   add({ username, transport, ipAddress, disconnect, isLive }) {
@@ -96,7 +104,7 @@ class SessionRegistry {
       ipAddress:   ipAddress || null,
       location:    'menu',           // 'menu' or a game name
       connectedAt: now,
-      lastSeenAt:  now,              // informational only — NEVER drives eviction
+      lastSeenAt:  now,
       gameEnteredAt: null,
       disconnect:  disconnect || (() => {}),
       isLive:      typeof isLive === 'function' ? isLive : null,
@@ -105,9 +113,9 @@ class SessionRegistry {
   }
 
   /**
-   * Bump the activity timestamp for a session. Informational only —
-   * sysop panel uses it to show "idle for N seconds." Does not affect
-   * whether the session is considered live.
+   * Bump the activity timestamp for a session. Call from transports on any
+   * user-driven event (incoming bytes, keypress, screen redraw triggered
+   * by user input). Cheap — just an O(1) Map lookup and a write.
    *
    * @param {string} id
    */
@@ -117,7 +125,7 @@ class SessionRegistry {
   }
 
   /**
-   * Update the location of a session. Implicitly pings (informational).
+   * Update the location of a session. Implicitly pings.
    *
    * @param {string} id
    * @param {string} location  'menu' | game name
@@ -139,16 +147,17 @@ class SessionRegistry {
   }
 
   /**
-   * Return a snapshot of all live sessions.
+   * Return a snapshot of all currently-live sessions.
    *
-   * As a side effect, evicts any entry whose isLive() returns false.
-   * Time-idle sessions are NEVER evicted, no matter how long the user
-   * has been quiet — see the file header for the rationale.
+   * The list is filtered as a side effect: any entry whose isLive() is
+   * false, or whose lastSeenAt has aged past staleAfterMs, is evicted
+   * before the snapshot is built. This means stale rows never appear in
+   * Who's Online even if the periodic sweep hasn't fired yet.
    *
    * @returns {SessionSnapshot[]}
    */
   list() {
-    this._evictDead();
+    this._evictStale();
     const now = Date.now();
     return Array.from(this._sessions.values()).map(e => ({
       id:           e.id,
@@ -166,11 +175,11 @@ class SessionRegistry {
   }
 
   /**
-   * Number of live sessions (after dead-socket eviction).
+   * Number of live sessions (after stale-eviction).
    * @returns {number}
    */
   count() {
-    this._evictDead();
+    this._evictStale();
     return this._sessions.size;
   }
 
@@ -207,33 +216,32 @@ class SessionRegistry {
 
   // ─── Internal ────────────────────────────────────────────────────────────
 
-  /**
-   * Probe every entry's isLive() and evict the ones that report false.
-   * Entries without an isLive callback are left in place (the registry
-   * has no opinion about their liveness; the transport owns removal).
-   *
-   * Importantly, this function does NOT consider lastSeenAt. Activity
-   * timeouts are not the registry's job — see the file header.
-   */
-  _evictDead() {
-    const dead = [];
+  _evictStale() {
+    const cutoff = Date.now() - this._staleAfterMs;
+    const dead   = [];
 
     for (const entry of this._sessions.values()) {
-      if (!entry.isLive) continue;
-      let live;
-      try { live = entry.isLive(); } catch (_) { live = false; }
-      if (!live) dead.push(entry);
+      // Liveness probe wins — if the socket says it's gone, it's gone,
+      // regardless of how recent lastSeenAt is.
+      if (entry.isLive) {
+        let live;
+        try { live = entry.isLive(); } catch (_) { live = false; }
+        if (!live) { dead.push(entry); continue; }
+      }
+      if (entry.lastSeenAt < cutoff) {
+        dead.push(entry);
+      }
     }
 
     for (const entry of dead) {
       this._sessions.delete(entry.id);
-      // Best effort: if the transport's disconnect hook hasn't fired,
-      // invoke it now so any remaining server-side resources get cleaned
-      // up. The transport may already have torn down (e.g. socket
-      // destroyed) — swallow any errors from that.
+      // Best effort: if there is a disconnect callback, invoke it so any
+      // remaining server-side resources get cleaned up too. Wrapped in
+      // try/catch because the callback's transport may already have torn
+      // down its own state (e.g. socket.destroyed).
       try { entry.disconnect(); } catch (_) {}
       if (this._logger) {
-        this._logger.info(`[SessionRegistry] reaped dead session id=${entry.id} username=${entry.username} transport=${entry.transport}`);
+        this._logger.info(`[SessionRegistry] reaped stale session id=${entry.id} username=${entry.username} transport=${entry.transport}`);
       }
     }
 
@@ -245,7 +253,7 @@ class SessionRegistry {
    */
   _sweep() {
     try {
-      this._evictDead();
+      this._evictStale();
     } catch (err) {
       if (this._logger && this._logger.warn) {
         this._logger.warn(`[SessionRegistry] sweep error: ${err.message}`);

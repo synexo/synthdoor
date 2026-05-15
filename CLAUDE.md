@@ -821,6 +821,10 @@ Row 25 is written using save-cursor / restore-cursor so it never interferes with
 game area. The framebuffer (`putChar`, `putString`, `fill`, `clear`) covers rows 1-24
 only. Col 80 of row 24 is also never written (another common scroll trigger).
 
+See Rule 6 for the SCROLL-mode counterpart — writing to col 80 in SCROLL mode also
+advances the cursor (by design — this is standard BBS wrap behaviour), with subtler
+consequences than in FIXED mode.
+
 ### 5. package.json for new games must NOT list @synthdoor/engine as a dependency
 
 **WRONG — causes npm to create workspace symlinks that break module resolution:**
@@ -838,6 +842,66 @@ only. Col 80 of row 24 is also never written (another common scroll trigger).
   "license": "MIT"
 }
 ```
+
+### 6. In SCROLL mode, a write to column 80 auto-advances the cursor
+
+This is **standard BBS wrap behaviour** (SyncTerm / CTerm / DOS ANSI.SYS / NetRunner /
+mTelnet all do this; it is the de-facto BBS standard). The SynthDoor web client matches
+SyncTerm's default: as soon as a printable character lands in column 80, the cursor
+moves to column 1 of the next line. There is no "stuck cursor" state. The implication
+for game authors is subtle and bites in two places:
+
+**Pitfall 1 — `terminal.println(line-that-is-exactly-80-chars)` advances two rows.**
+
+The 80th character auto-wraps the cursor to the next row, then the `\r\n` advances
+again. You get a blank row between the line and whatever follows.
+
+**WRONG — produces an unwanted blank row below the banner:**
+```javascript
+this.terminal.println(Utils.center(' M Y   B A N N E R ', 80));
+this.terminal.println('Press any key...');  // appears on row 3, not row 2
+```
+
+**CORRECT — center within 79 chars, leaving column 80 untouched:**
+```javascript
+this.terminal.println(Utils.center(' M Y   B A N N E R ', 79));
+this.terminal.println('Press any key...');  // appears on row 2 as expected
+```
+
+The same applies to any full-width separator, ruler line, or `'─'.repeat(80)` pattern
+used with `println`. If you want it to occupy exactly one row, write 79 chars, not 80.
+
+**Pitfall 2 — counting "how many rows did this output occupy" must account for the
+auto-wrap.**
+
+If you need to back the cursor up over wrapped input (e.g. an editable input buffer
+that may span multiple lines), the number of rows occupied by `len` characters is
+`floor(len / 80)` past the starting row, **not** `floor((len - 1) / 80)`. The
+off-by-one trips exactly when `len` is an exact multiple of 80.
+
+**WRONG — under-counts when len ∈ {80, 160, 240, …}, leaving stale text on screen:**
+```javascript
+const wraps = Math.floor((len - 1) / 80);  // assumes deferred wrap
+```
+
+**CORRECT:**
+```javascript
+const wraps = Math.floor(len / 80);
+```
+
+**FIXED-mode games don't have to think about this.** The engine's `Screen.flush()`
+emits an absolute `\x1B[r;cH` before each cell write and deliberately skips the
+bottom-right cell — wrap semantics never apply. This rule is specifically for SCROLL
+mode and for any direct `terminal.writeRaw` / `terminal.print` / `terminal.println`
+output you produce yourself.
+
+**Why this is the way it is.** Classic BBS games (TradeWars 2002, LORD, Usurper,
+SMASHIM, …) draw multi-column layouts by writing full-width rows and using `ESC[A`
+to back up over the just-wrapped row, overlaying content onto the just-wrapped target
+row. That trick depends on the auto-wrap firing immediately. Switching to deferred
+wrap (the DEC VT100 / STD-070 "Last Column Flag" model that xterm/iTerm use) would
+break those games. SyncTerm's documentation is explicit: "Not configurable." We
+match that.
 
 ---
 ## Implemented screen.js enhancements

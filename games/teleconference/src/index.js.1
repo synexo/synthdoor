@@ -38,23 +38,6 @@ class Teleconference extends GameBase {
     }
 
     this.input.bind(' ', 'SPACE');
-
-    // Teleconference is a free-text chat: the engine's default 'q'/'Q' →
-    // QUIT binding would exit the game any time a user typed a word
-    // containing the letter Q (English alone has many: "quick", "quote",
-    // "Iraq", names, etc.). Drop those bindings so the only way out is
-    // the explicit /quit command (handled in _handleCommand).
-    //
-    // We also drop the default 'p'/'P' → PAUSE binding for the same reason
-    // — PAUSE has no meaning in a chat context, and leaving it bound would
-    // emit a PAUSE action the action handler would otherwise have to
-    // suppress. ESCAPE is left bound (it is not a typeable character in
-    // ordinary messages and operators may want it for emergency exit).
-    this.input.unbind('q');
-    this.input.unbind('Q');
-    this.input.unbind('p');
-    this.input.unbind('P');
-
     this._updatePresence();
 
     this._mp = new Multiplayer(this.db, this.username, this.constructor.GAME_NAME);

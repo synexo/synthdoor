@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-bbs-code-helper",
+  "version": "1.0.0",
+  "description": "Generate a SynthDoor BBS system code and show your sysops how to wire their BBS to it via rlogin.",
+  "main": "src/index.js",
+  "license": "MIT"
+}

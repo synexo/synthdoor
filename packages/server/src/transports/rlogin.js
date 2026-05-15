@@ -75,14 +75,22 @@ class RloginTransport {
     this._server  = null;
   }
 
-  listen(port) {
+  /**
+   * Start listening.
+   *
+   * @param {number} port
+   * @param {string} [host='0.0.0.0']  Interface to bind on. Defaults to all
+   *                                   interfaces. See TelnetTransport.listen
+   *                                   for usage notes.
+   */
+  listen(port, host = '0.0.0.0') {
     this._server = netModule.createServer((socket) => {
       this._handleConnection(socket).catch(err => {
         getLogger().error('[rlogin] Unhandled error:', err.message);
         socket.destroy();
       });
     });
-    this._server.listen(port);
+    this._server.listen(port, host);
     return this;
   }
 
@@ -93,6 +101,16 @@ class RloginTransport {
   async _handleConnection(socket) {
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 30000);
+
+    // Install an early error handler — see the corresponding comment in
+    // telnet.js. The rlogin handshake reader already attaches its own
+    // 'error' listener for the duration of the handshake, but once that
+    // resolves the listener is removed; without this catch-all, any
+    // post-handshake socket error crashes the process.
+    const ipAddressEarly = socket.remoteAddress || 'unknown';
+    socket.on('error', (err) => {
+      getLogger().info(`[rlogin] ${ipAddressEarly} socket error: ${err.code || err.message}`);
+    });
 
     const handshake = await readRloginHandshake(socket);
     if (!handshake) {
@@ -150,7 +168,16 @@ class RloginTransport {
       transport:  'rlogin',
       ipAddress,
       disconnect: () => socket.destroy(),
+      isLive:     () => !socket.destroyed,
     }) : null;
+
+    // Ping the registry whenever the user types — keeps Who's Online
+    // showing accurate idle time and prevents spurious staleness eviction
+    // for actively-used connections that the periodic sweep happens to
+    // catch mid-keystroke.
+    if (sessionId && this.registry) {
+      socket.on('data', () => this.registry.ping(sessionId));
+    }
 
     getLogger().info(`[Session] LOGIN username=${username} transport=rlogin ip=${ipAddress || 'unknown'}`);
     try { this.router.db.incrementLoginCount(username); } catch (_) {}
@@ -235,7 +262,12 @@ class RloginTransport {
       transport:  'rlogin',
       ipAddress,
       disconnect: () => socket.destroy(),
+      isLive:     () => !socket.destroyed,
     }) : null;
+
+    if (sessionId && this.registry) {
+      socket.on('data', () => this.registry.ping(sessionId));
+    }
 
     getLogger().info(`[Session] LOGIN username=${username} transport=rlogin ip=${ipAddress || 'unknown'}`);
     try { this.router.db.incrementLoginCount(username); } catch (_) {}

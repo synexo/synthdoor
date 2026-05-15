@@ -1,7 +1,6 @@
 'use strict';
 const path = require('path');
-const fs   = require('fs');
-const net  = require('net');
+const net = require('net');
 
 // CRITICAL: Always use path.join for engine imports
 const { GameBase, Screen, Color } = require(
@@ -12,123 +11,6 @@ const { GameBase, Screen, Color } = require(
 const Utils = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'utils.js')
 );
-
-// ─── Debug logging ────────────────────────────────────────────────────────
-//
-// Set debug_log = true in [game:bbs-client] in synthdoor.conf to capture
-// every byte the bbs-client proxies in either direction. The log lands in
-// this game's own directory (logs/bbs-client-YYYY-MM-DD.log) so it travels
-// with the game folder for hand-off when troubleshooting missing ANSI
-// sequences in the web client's parser.
-//
-// Format per chunk:
-//
-//   [timestamp]  RX  78 bytes  from <host>:<port>
-//     0000  1B 5B 32 4A 1B 5B 48 0D  0A 57 65 6C 63 6F 6D 65   .[2J.[H..Welcome
-//     0010  20 74 6F 20 4D 79 42 42  53 21 0D 0A 0D 0A         to MyBBS!....
-//
-// Direction markers:
-//   RX  bytes received from the remote BBS (going to the user's screen)
-//   TX  bytes the user typed, going out to the remote BBS
-//
-// We hex-dump the raw bytes (not decoded latin1) because that's the
-// representation the web client's ANSI parser actually sees. This makes it
-// trivial to identify which CSI sequence is being skipped.
-//
-// The log file is opened lazily on first write and never closed explicitly
-// — when the connection ends we flush via fs.appendFileSync inside a small
-// queue so partial writes don't corrupt the dump. The file rotates daily
-// based on UTC date; this matches the main server log convention.
-
-class TelnetTrafficLogger {
-  /**
-   * @param {string} logDir   absolute path to the directory the log file
-   *                          will be written into; created if missing
-   * @param {string} host     remote host (for the file's first banner line)
-   * @param {number} port     remote port
-   */
-  constructor(logDir, host, port) {
-    this.logDir   = logDir;
-    this.host     = host;
-    this.port     = port;
-    this.filePath = null;
-    this._opened  = false;
-  }
-
-  _open() {
-    if (this._opened) return;
-    try {
-      fs.mkdirSync(this.logDir, { recursive: true });
-      const d     = new Date();
-      const stamp = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
-      this.filePath = path.join(this.logDir, `bbs-client-${stamp}.log`);
-      const banner = `\n=== Session opened ${new Date().toISOString()} → ${this.host}:${this.port} ===\n`;
-      fs.appendFileSync(this.filePath, banner, 'utf8');
-      this._opened = true;
-    } catch (e) {
-      // Logging must never crash the game. If the file can't be opened,
-      // silently disable further writes for this session.
-      this._opened = false;
-      this.filePath = null;
-    }
-  }
-
-  /**
-   * Append a chunk of bytes to the log.
-   *
-   * @param {'RX'|'TX'} direction
-   * @param {Buffer|string} chunk
-   */
-  log(direction, chunk) {
-    this._open();
-    if (!this._opened || !this.filePath) return;
-
-    const buf = Buffer.isBuffer(chunk)
-      ? chunk
-      : Buffer.from(String(chunk), 'binary');
-    const ts  = new Date().toISOString();
-
-    let out = `[${ts}]  ${direction}  ${buf.length} bytes\n`;
-
-    // 16-byte rows: hex columns + ASCII gutter. Non-printables become '.'.
-    for (let i = 0; i < buf.length; i += 16) {
-      const slice = buf.slice(i, i + 16);
-      const hex = Array.from(slice)
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join(' ');
-      // Pad hex to a fixed width so the ASCII gutter aligns even on the
-      // last (short) row. Each byte takes 3 columns ('XX '), and we add
-      // a single space gap between bytes 7 and 8 for readability.
-      const hexPart = hex.padEnd(16 * 3 - 1, ' ');
-      const hexSplit = hexPart.length > 23
-        ? hexPart.slice(0, 23) + '  ' + hexPart.slice(24)
-        : hexPart;
-      const ascii = Array.from(slice)
-        .map((b) => (b >= 0x20 && b <= 0x7E ? String.fromCharCode(b) : '.'))
-        .join('');
-      const offset = i.toString(16).padStart(4, '0');
-      out += `  ${offset}  ${hexSplit}  ${ascii}\n`;
-    }
-
-    try {
-      fs.appendFileSync(this.filePath, out, 'utf8');
-    } catch (_) {
-      this._opened = false;
-    }
-  }
-
-  close() {
-    if (!this._opened || !this.filePath) return;
-    try {
-      fs.appendFileSync(
-        this.filePath,
-        `=== Session closed ${new Date().toISOString()} ===\n`,
-        'utf8',
-      );
-    } catch (_) {}
-    this._opened = false;
-  }
-}
 
 class BbsClient extends GameBase {
   static get GAME_NAME() { return 'bbs-client'; }
@@ -153,7 +35,7 @@ class BbsClient extends GameBase {
       this.terminal.clearScreen();
       
       this.terminal.setColor(Color.BRIGHT_WHITE, Color.BLUE);
-      this.terminal.println(Utils.center(' B B S   D I R E C T O R Y ', 79));
+      this.terminal.println(Utils.center(' B B S   D I R E C T O R Y ', 80));
       this.terminal.resetAttrs();
 
       const startIdx = page * PAGE_SIZE;
@@ -254,20 +136,6 @@ class BbsClient extends GameBase {
   }
 
   /**
-   * Resolve whether debug logging is enabled for this session. Reads the
-   * `debug_log` key under [game:bbs-client] in synthdoor.conf, accepting
-   * the same boolean tokens the Config class uses elsewhere
-   * (true/yes/1/on, anything else → false).
-   */
-  _debugLogEnabled() {
-    if (!this.config) return false;
-    const raw = this.config.debug_log;
-    if (raw === undefined || raw === null) return false;
-    const v = String(raw).trim().toLowerCase();
-    return ['true', '1', 'yes', 'on'].includes(v);
-  }
-
-  /**
    * Main Telnet proxy loop. Establishes a raw TCP connection and pipes bytes bidirectionally.
    */
   _connectToBBS(host, port) {
@@ -281,22 +149,6 @@ class BbsClient extends GameBase {
       this.terminal.println(`(Press Ctrl+] to forcefully disconnect at any time)`);
       this.terminal.resetAttrs();
 
-      // Optional debug capture. Lives in this game's own directory so the
-      // file is easy to find when triaging "the web client mangled this
-      // ANSI sequence" reports — `cat games/bbs-client/logs/bbs-client-*.log`
-      // gives the reproduction trace next to the game source.
-      let debug = null;
-      if (this._debugLogEnabled()) {
-        const logDir = path.join(__dirname, '..', 'logs');
-        debug = new TelnetTrafficLogger(logDir, host, port);
-
-        this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
-        this.terminal.println(`[DEBUG] Telnet traffic logging is ON.`);
-        this.terminal.println(`[DEBUG] Writing to: ${path.join(logDir, 'bbs-client-YYYY-MM-DD.log')}`);
-        this.terminal.println('');
-        this.terminal.resetAttrs();
-      }
-
       const socket = net.createConnection(port, host);
 
       const cleanup = () => {
@@ -304,7 +156,6 @@ class BbsClient extends GameBase {
         isResolved = true;
         this.terminal.removeListener('key', keyHandler);
         if (!socket.destroyed) socket.destroy();
-        if (debug) debug.close();
         resolve();
       };
 
@@ -316,7 +167,6 @@ class BbsClient extends GameBase {
       // Note on ♫: The CP437 music symbol is ASCII \x0E. In Telnet, \x0E is the 'Shift Out'
       // control code. Some emulators and transports silently swallow it.
       socket.on('data', (chunk) => {
-        if (debug) debug.log('RX', chunk);
         this.terminal.writeRaw(chunk.toString('binary'));
       });
 
@@ -336,7 +186,6 @@ class BbsClient extends GameBase {
 
       const sendToSocket = (str) => {
         if (connected && !socket.destroyed) {
-          if (debug) debug.log('TX', Buffer.from(str, 'binary'));
           socket.write(str, 'binary');
         }
       };

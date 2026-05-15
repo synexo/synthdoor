@@ -16,50 +16,62 @@ selections:
     type: game
     target: bbs-client
   - key: "2"
+    text: "BBS Code Helper"
+    type: game
+    target: bbs-code-helper
+  - key: "3"
     text: "Daily Horoscope"
     type: game
     target: daily-horoscope
-  - key: "3"
+  - key: "4"
+    text: "Descent Into the Void"
+    type: game
+    target: descent
+  - key: "5"
     text: "The Europa Trail"
     type: game
     target: europa-trail
-  - key: "4"
+  - key: "6"
     text: "Gemini Browser"
     type: game
     target: gemini-browser
-  - key: "5"
+  - key: "7"
     text: "Gopher Browser"
     type: game
     target: gopher-browser
-  - key: "6"
+  - key: "8"
     text: "IMG2ANSI"
     type: game
     target: img2ansi
-  - key: "7"
+  - key: "9"
+    text: "Lightrunner"
+    type: game
+    target: lightrunner
+  - key: "A"
     text: "METEOROID"
     type: game
     target: meteoroid
-  - key: "8"
+  - key: "B"
     text: "MRC Chat"
     type: game
     target: mrc-chat
-  - key: "9"
+  - key: "C"
     text: "Teleconference"
     type: game
     target: teleconference
-  - key: "A"
+  - key: "D"
     text: "TETROMINO"
     type: game
     target: tetromino
-  - key: "B"
+  - key: "E"
     text: "TRIANGULUM"
     type: game
     target: triangulum
-  - key: "C"
+  - key: "F"
     text: "Usurper Reborn"
     type: game
     target: usurper-reborn
-  - key: "D"
+  - key: "G"
     text: "Wikipedia Scroll"
     type: game
     target: wikipedia-scroll

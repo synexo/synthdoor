@@ -19,26 +19,15 @@
 const path = require('path');
 const fs   = require('fs');
 
-// Helper: canonicalise a require path so server-internal singleton-bearing
-// modules (logger, roles) hit the same module-cache slot the server
-// populated at startup. See CLAUDE.md Rule 7 for the full rationale.
-// In short: `path.join` preserves the case Node gave us for __dirname,
-// while the server's own short-relative `require('./logger')` resolves
-// through Node's resolver which can produce a different case on Windows.
-// Two different case-spellings = two separate module records = two
-// separate private `_instance = null`s. Composing require.resolve with
-// fs.realpathSync forces a single canonical string regardless of caller.
-const _resolveServerModule = (p) => fs.realpathSync(require.resolve(p));
-
 const { GameBase, Screen, Draw, Color, CP437 } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'index.js')
 );
-const { isSysop } = require(_resolveServerModule(
+const { isSysop } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'roles.js')
-));
-const { getLogger } = require(_resolveServerModule(
+);
+const { getLogger } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'logger.js')
-));
+);
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const W        = 80;

@@ -4,11 +4,11 @@
  * Reads window.SYNTHDOOR_CONFIG (set in index.html) for all runtime options.
  */
 
-import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.min.js';
-import { Renderer, CHAR_W, CHAR_H }                  from './renderer.min.js';
-import { WSConnection }                               from './connection.min.js';
-import { ANSIMusic }                                  from './music.min.js';
-import { SBANSIDecoder }                              from './sbansi-decoder.min.js';
+import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.js';
+import { Renderer, CHAR_W, CHAR_H }                  from './renderer.js';
+import { WSConnection }                               from './connection.js';
+import { ANSIMusic }                                  from './music.js';
+import { SBANSIDecoder }                              from './sbansi-decoder.js';
 
 // ── Config with defaults ──────────────────────────────────────────────────
 const CFG = Object.assign({
@@ -479,43 +479,15 @@ export class App {
   }
 
   /**
-   * Return true if (col, row) is clickable as a "single-key" target.
-   *
-   * Two matching patterns:
-   *
-   *   1. Alphanumeric whose horizontal neighbours are NOT alphanumeric.
-   *      Catches the conventional BBS menu-key style:
-   *          [L]ogin   (A)bort   1. New game   Q.uit
-   *      Note: neighbours need only be non-alphanumeric — punctuation,
-   *      brackets, whitespace, box-drawing chars all qualify.
-   *
-   *   2. Non-alphanumeric character explicitly wrapped in literal
-   *      square brackets:
-   *          [%]   [!]   [?]   [*]   [/]
-   *      The left neighbour must be '[' and the right neighbour must
-   *      be ']'. This is intentionally narrow: only bracketed punctuation
-   *      counts, so flowing prose ("the % symbol") stays non-clickable.
-   *
-   * The historical name '_isLoneAlphaNum' is retained to minimise diff
-   * surface; the predicate now answers the broader question "is this a
-   * single-key click target?".
+   * Return true if (col, row) is a lone alphanumeric —
+   * i.e. it IS alphanumeric but neither of its horizontal neighbours is.
    */
   _isLoneAlphaNum(col, row) {
     const ch = this._charAt(col, row);
-    if (ch === null) return false;
-
+    if (!this._isAlphaNum(ch)) return false;
     const left  = this._charAt(col - 1, row);
     const right = this._charAt(col + 1, row);
-
-    // Pattern 1: alphanumeric with non-alphanumeric neighbours.
-    if (this._isAlphaNum(ch)) {
-      return !this._isAlphaNum(left) && !this._isAlphaNum(right);
-    }
-
-    // Pattern 2: non-alphanumeric wrapped in literal square brackets.
-    // The brackets themselves are not click targets (their neighbours
-    // wouldn't be '[' and ']'), which is correct.
-    return left === '[' && right === ']';
+    return !this._isAlphaNum(left) && !this._isAlphaNum(right);
   }
 
   // ── Canvas mouse bindings ─────────────────────────────────────

@@ -304,14 +304,52 @@ export class Terminal {
   }
 
   // ── Character output ──────────────────────────────────────────
+  //
+  // Wrap semantics — eager, matching SyncTerm / CTerm (the de-facto BBS
+  // terminal). When a printable character is written to the last column,
+  // the cursor immediately moves to column 0 of the next line (scrolling
+  // if at the scroll bottom) before the *next* byte is processed.
+  //
+  // The VT100 / STD-070 "Last Column Flag" model — where the cursor sticks
+  // at column 79, and only auto-wraps when the next printable arrives —
+  // is the model most modern emulators (xterm/iTerm/etc.) use, and is
+  // what this client implemented previously. BBSes written against DOS
+  // ANSI.SYS / SyncTerm assume the eager model: they draw exactly 80
+  // characters per row and follow with `\r\n` + `ESC[A` to come back up
+  // and overlay a second pass on the just-wrapped row. Under deferred
+  // wrap the `\r\n` only advances one line (the wrap was still pending),
+  // so the `ESC[A` lands back on the source row and the overlay
+  // overwrites the row that was just drawn. SMASHIM and similarly
+  // tightly-packed door games depend on the eager model — see the
+  // bbs-client debug log for the empirical evidence.
+  //
+  // The SyncTerm manual is explicit: "The cursor is moved to the first
+  // character of the next line as soon as a character is written to the
+  // last column of the current line, not on the next character. … Not
+  // configurable in SyncTERM." STD-070 deferred-wrap is the opt-in mode
+  // there (via `CSI =4h`); we mirror that posture by defaulting to
+  // eager and leaving the `_wrapPending` machinery dormant in the rest
+  // of the methods for now.
   putChar(byte) {
-    if (this._wrapPending&&this._autoWrap) { this.carriageReturn(); this.lineFeed(); this._wrapPending=false; }
     const cell=this.screen.get(this.cx,this.cy);
     if (this._insertMode) {
       for (let c=this.cols-1;c>this.cx;c--) this.screen.get(c,this.cy).copyFrom(this.screen.get(c-1,this.cy));
     }
     cell.set(byte,this.fgColor,this.bgColor,this.bold,this.blink);
-    if (this.cx>=this.cols-1) this._wrapPending=true; else this.cx++;
+    if (this.cx>=this.cols-1) {
+      // Eager wrap: advance to column 0 of the next line immediately.
+      // Respect DECAWM (auto-wrap mode) — when off, the cursor stays
+      // in place and further characters overwrite the last column.
+      if (this._autoWrap) {
+        this.cx=0;
+        if (this.cy===this._scrollBottom) this._doScrollUp();
+        else if (this.cy<this.rows-1) this.cy++;
+      }
+      // _wrapPending stays false; the eager model does not use it.
+      this._wrapPending=false;
+    } else {
+      this.cx++;
+    }
   }
   carriageReturn() { this.cx=0; this._wrapPending=false; }
   lineFeed() {
@@ -540,22 +578,11 @@ export class Terminal {
   getSelectionText(start,end) {
     let [r1,c1]=start,[r2,c2]=end;
     if (r1>r2||(r1===r2&&c1>c2)) { [r1,c1,r2,c2]=[r2,c2,r1,c1]; }
-    // Selection coordinates from app.js are viewport-relative — the row
-    // number is "what the user sees at the top of the canvas" + offset
-    // down. When scrollback is active that's a mixture of scrollback
-    // rows (top of viewport) and possibly live rows (bottom). The
-    // renderer pulls its cells from getDisplayCells() to honour that;
-    // we have to do the same here or copy would silently pull from the
-    // live screen and produce content the user did not select.
-    const cells = this.getDisplayCells();
     let text='';
     for(let r=r1;r<=r2;r++) {
       const cs=r===r1?c1:0,ce=r===r2?c2:this.cols-1;
       let line='';
-      for(let c=cs;c<=ce;c++) {
-        const cell = cells[r*this.cols+c];
-        line += (cell ? CP437[cell.ch] : null) || ' ';
-      }
+      for(let c=cs;c<=ce;c++) line+=CP437[this.screen.get(c,r).ch]||' ';
       text+=line.trimEnd()+(r<r2?'\n':'');
     }
     return text;

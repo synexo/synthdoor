@@ -118,23 +118,13 @@ class MenuSession {
           await this._handleSelection(result.selection);
           break;
 
-        case 'back': {
-          const popped = this._stack.pop();
+        case 'back':
+          this._stack.pop();
+          // If we've popped back past root, treat as exit
           if (this._stack.length === 0) {
-            // Popped past root. Special case: if the popped context was the
-            // pre-logoff role menu (which sits alone on the stack at that
-            // phase), the user picked "Continue" expecting to return to the
-            // main menu, NOT to log off. Push a fresh top menu instead of
-            // draining → done. This honours the literal wording of the
-            // role-menu's C selection on the second encounter.
-            if (popped instanceof RoleMenuContext) {
-              this._stack = [new MenuContext(topDef)];
-            } else {
-              this._done = true;
-            }
+            this._done = true;
           }
           break;
-        }
 
         case 'exit':
           // On exit from top menu, show role menu one final time (pre-logoff)

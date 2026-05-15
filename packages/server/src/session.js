@@ -41,7 +41,7 @@ const { runEntryFlow, displayLoginArt } = require('./auth-flow');
 const { isSysopAllowed, isValidNaiveUsername, NAIVE_MAX_USERNAME_LEN } = require('./reserved');
 const { getLogger } = require('./logger');
 
-async function runSession({ terminal, output, filtered, authMode, transport, ipAddress, router, config, registry, disconnect }) {
+async function runSession({ terminal, output, filtered, authMode, transport, ipAddress, router, config, registry, disconnect, isLive, bindSession }) {
 
   const projectRoot = path.resolve(__dirname, '..', '..', '..');
 
@@ -150,7 +150,15 @@ async function runSession({ terminal, output, filtered, authMode, transport, ipA
         transport,
         ipAddress,
         disconnect: disconnect || (() => {}),
+        isLive,
       });
+    }
+
+    // Hand the id back to the transport so it can drive registry.ping()
+    // from its own activity hooks. Optional — transports that don't
+    // implement liveness reporting just skip it.
+    if (sessionId && typeof bindSession === 'function') {
+      try { bindSession(sessionId); } catch (_) {}
     }
 
     getLogger().info(`[Session] LOGIN username=${username} transport=${transport} ip=${ipAddress || 'unknown'}`);

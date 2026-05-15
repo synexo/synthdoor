@@ -540,22 +540,11 @@ export class Terminal {
   getSelectionText(start,end) {
     let [r1,c1]=start,[r2,c2]=end;
     if (r1>r2||(r1===r2&&c1>c2)) { [r1,c1,r2,c2]=[r2,c2,r1,c1]; }
-    // Selection coordinates from app.js are viewport-relative — the row
-    // number is "what the user sees at the top of the canvas" + offset
-    // down. When scrollback is active that's a mixture of scrollback
-    // rows (top of viewport) and possibly live rows (bottom). The
-    // renderer pulls its cells from getDisplayCells() to honour that;
-    // we have to do the same here or copy would silently pull from the
-    // live screen and produce content the user did not select.
-    const cells = this.getDisplayCells();
     let text='';
     for(let r=r1;r<=r2;r++) {
       const cs=r===r1?c1:0,ce=r===r2?c2:this.cols-1;
       let line='';
-      for(let c=cs;c<=ce;c++) {
-        const cell = cells[r*this.cols+c];
-        line += (cell ? CP437[cell.ch] : null) || ' ';
-      }
+      for(let c=cs;c<=ce;c++) line+=CP437[this.screen.get(c,r).ch]||' ';
       text+=line.trimEnd()+(r<r2?'\n':'');
     }
     return text;

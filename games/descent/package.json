@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/descent",
+  "version": "1.0.0",
+  "description": "Descent - Vertical SHMUP for Synthdoor",
+  "main": "src/index.js",
+  "license": "MIT"
+}

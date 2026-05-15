@@ -89,7 +89,18 @@ class WebSocketTransport {
     this._wss    = null;
   }
 
-  listen(port) {
+  /**
+   * Start listening.
+   *
+   * @param {number} port
+   * @param {string} [host='0.0.0.0']  Interface to bind on. Defaults to all
+   *                                   interfaces. Pass '127.0.0.1' (paired
+   *                                   with a reverse-proxy + trust_proxy in
+   *                                   synthdoor.conf) to restrict the engine
+   *                                   to loopback while exposing TLS via the
+   *                                   proxy on the public NIC.
+   */
+  listen(port, host = '0.0.0.0') {
     const publicDir = path.resolve(__dirname, '..', '..', 'src', 'web', 'public');
 
     if (!fs.existsSync(publicDir)) {
@@ -109,8 +120,8 @@ class WebSocketTransport {
       });
     });
 
-    this._server.listen(port, () => {
-      getLogger().info(`[WebSocket] Listening on port ${port} (${this.authMode} mode)`);
+    this._server.listen(port, host, () => {
+      getLogger().info(`[WebSocket] Listening on ${host}:${port} (${this.authMode} mode)`);
     });
 
     return this;
@@ -310,6 +321,24 @@ class WebSocketTransport {
       transport: 'web',
     });
 
+    // ── Registry liveness wiring ────────────────────────────────────────────
+    //
+    // Two channels: a periodic ping driven by the same incoming-message
+    // handler that tracks idle activity, and an isLive() probe that
+    // returns false once the WebSocket leaves the OPEN state. Together
+    // they guarantee the Who's Online list never holds rows whose
+    // connection has actually gone away — even if the disconnect path
+    // misfires.
+    let _sessionId = null;
+    const onIncomingMessage = () => {
+      lastActivity = Date.now();
+      if (_sessionId && this.registry) this.registry.ping(_sessionId);
+    };
+    // Replace the message bookkeeping that previously only updated the
+    // local lastActivity. The original handler is still installed below;
+    // here we add a second listener so both run.
+    ws.on('message', onIncomingMessage);
+
     // ── Run session (auth + game router) ────────────────────────────────────
     try {
       await runSession({
@@ -323,6 +352,10 @@ class WebSocketTransport {
         config:     this.config,
         registry:   this.registry,
         disconnect: () => { try { ws.close(); } catch (_) {} },
+        // ws.readyState OPEN === 1. Anything else (CLOSING, CLOSED) means
+        // the registry should consider this entry dead.
+        isLive:     () => ws.readyState === 1,
+        bindSession: (id) => { _sessionId = id; },
       });
     } catch (err) {
       getLogger().error(`[WebSocket] Session error for ${remoteIP}:`, err.stack || err.message);

@@ -182,19 +182,7 @@ class MrcChat extends GameBase {
     this._partialPacket = '';
     
     // Strip tildes from nicks to prevent protocol injection and enforce underscores
-    const defaultNick = this._sanitiseNick(this.username || 'guest');
-
-    // If the user has saved a custom nick from a previous session, use it.
-    // Otherwise fall back to the server-derived default.
-    let savedNick = null;
-    try {
-      savedNick = this.db && this.db.getPlayerData
-        ? this.db.getPlayerData(MrcChat.GAME_NAME, this.username, 'nick', null)
-        : null;
-    } catch (_) { savedNick = null; }
-
-    this._nick         = savedNick ? this._sanitiseNick(savedNick) : defaultNick;
-    if (!this._nick) this._nick = defaultNick;  // ultra-defensive — empty saved value
+    this._nick         = (this.username || 'guest').replace(/~/g, '-').replace(/\s/g, '_').substring(0, 30);
     this._fromSite     = this._bbsName.replace(/[~\s]/g, '_').substring(0, 30);
     this._displayNick  = this._nick;
     this._twits        = new Set();
@@ -214,37 +202,6 @@ class MrcChat extends GameBase {
     }
   }
 
-  /**
-   * Apply the MRC nick sanitisation rules:
-   *   - strip tildes (~) to prevent MRC protocol-injection
-   *   - replace any whitespace with underscores
-   *   - cap at 30 chars
-   * Used for the auto-derived default, DB-loaded value, and user-typed
-   * input alike so all three follow the same rules.
-   */
-  _sanitiseNick(raw) {
-    if (!raw) return '';
-    return String(raw)
-      .trim()
-      .replace(/~/g, '-')
-      .replace(/\s+/g, '_')
-      .substring(0, 30);
-  }
-
-  /**
-   * Persist the user's chosen nick under their username so it defaults
-   * on future MRC sessions. Failures are swallowed — a transient DB
-   * error here shouldn't block the user from joining chat.
-   */
-  _saveNick(nick) {
-    if (!this.db || !this.db.setPlayerData || !this.username) return;
-    try {
-      this.db.setPlayerData(MrcChat.GAME_NAME, this.username, 'nick', nick);
-    } catch (err) {
-      this._log(`MRC: failed to persist nick (${err && err.message}); will use it this session only`);
-    }
-  }
-
   async onDisconnect() {
     this._log('Client disconnected from SynthDoor. Closing MRC resources.');
     this._running = false;
@@ -257,111 +214,50 @@ class MrcChat extends GameBase {
   }
 
   async _showSplash() {
-    // Outer loop: re-renders the splash after a nick change so the user
-    // sees the updated value before deciding whether to connect.
+    this.terminal.clearScreen();
+    this.terminal.println('');
+    this.terminal.setColor(Color.BRIGHT_CYAN, Color.BLACK);
+    this.terminal.println('  ███╗   ███╗██████╗  ██████╗');
+    this.terminal.println('  ████╗ ████║██╔══██╗██╔════╝');
+    this.terminal.println('  ██╔████╔██║██████╔╝██║     ');
+    this.terminal.println('  ██║╚██╔╝██║██╔══██╗██║     ');
+    this.terminal.println('  ██║ ╚═╝ ██║██║  ██║╚██████╗');
+    this.terminal.println('  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝');
+    this.terminal.println('');
+    this.terminal.setColor(Color.CYAN, Color.BLACK);
+    this.terminal.println('  Multi-Relay Chat for SynthDoor');
+    this.terminal.println('');
+    
+    this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
+    this.terminal.println('  ────────────────────────────────────────');
+    this.terminal.setColor(Color.WHITE, Color.BLACK);
+    this.terminal.println(`  Host   : ${this._host}`);
+    this.terminal.println(`  Port   : ${this._port}`);
+    this.terminal.println(`  SSL    : ${this._useSSL ? 'Yes' : 'No'}`);
+    this.terminal.println(`  Nick   : ${this._nick.replace(/_/g, ' ')}`);
+    this.terminal.println(`  BBS    : ${this._bbsName}`);
+    this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
+    this.terminal.println('  ────────────────────────────────────────');
+    this.terminal.println('');
+    
+    this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
+    this.terminal.print('  Press [ENTER] to Connect or [Q] to Quit > ');
+    this.terminal.resetAttrs();
+
+    // Blocking wait loop (no action mapper)
     while (true) {
-      this.terminal.clearScreen();
-      this.terminal.println('');
-      this.terminal.setColor(Color.BRIGHT_CYAN, Color.BLACK);
-      this.terminal.println('  ███╗   ███╗██████╗  ██████╗');
-      this.terminal.println('  ████╗ ████║██╔══██╗██╔════╝');
-      this.terminal.println('  ██╔████╔██║██████╔╝██║     ');
-      this.terminal.println('  ██║╚██╔╝██║██╔══██╗██║     ');
-      this.terminal.println('  ██║ ╚═╝ ██║██║  ██║╚██████╗');
-      this.terminal.println('  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝');
-      this.terminal.println('');
-      this.terminal.setColor(Color.CYAN, Color.BLACK);
-      this.terminal.println('  Multi-Relay Chat for SynthDoor');
-      this.terminal.println('');
-
-      this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
-      this.terminal.println('  ────────────────────────────────────────');
-      this.terminal.setColor(Color.WHITE, Color.BLACK);
-      this.terminal.println(`  Host   : ${this._host}`);
-      this.terminal.println(`  Port   : ${this._port}`);
-      this.terminal.println(`  SSL    : ${this._useSSL ? 'Yes' : 'No'}`);
-      this.terminal.println(`  Nick   : ${this._nick.replace(/_/g, ' ')}`);
-      this.terminal.println(`  BBS    : ${this._bbsName}`);
-      this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
-      this.terminal.println('  ────────────────────────────────────────');
-      this.terminal.println('');
-
-      this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
-      this.terminal.print('  Press [ENTER] to Connect, [N] to Change Nick, or [Q] to Quit > ');
-      this.terminal.resetAttrs();
-
-      // Blocking wait loop (no action mapper) — break out only on the
-      // three known choices; ignore other keys.
-      let choice = null;
-      while (choice === null) {
-        const key = await this.terminal.waitKey();
-        const k = (key || '').toLowerCase();
-        if (k === 'q')                                          choice = 'quit';
-        else if (k === 'n')                                     choice = 'nick';
-        else if (key === '\r' || key === '\n' || key === 'Enter') choice = 'connect';
-      }
-
-      if (choice === 'quit') {
+      const key = await this.terminal.waitKey();
+      if (key.toLowerCase() === 'q') {
         this._running = false;
         break;
       }
-      if (choice === 'connect') {
+      if (key === '\r' || key === '\n' || key === 'Enter') {
         break;
       }
-      // choice === 'nick' → prompt, persist, loop to re-render the splash
-      await this._promptForNick();
-      // Loop iteration redraws the splash with the new (or unchanged) nick.
     }
-
+    
     this.terminal.println('');
     this.terminal.println('');
-  }
-
-  /**
-   * Prompt the user for a new nick. Sanitises, validates non-empty, and
-   * persists to the DB on success. Empty input or whitespace-only input
-   * is rejected (so an accidental Enter doesn't wipe the saved value).
-   * The user can also press ESC / Ctrl-C — handled by readLine returning
-   * whatever it got; we treat an empty return as "no change."
-   */
-  async _promptForNick() {
-    this.terminal.println('');
-    this.terminal.setColor(Color.BRIGHT_CYAN, Color.BLACK);
-    this.terminal.println('  Change Nick');
-    this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
-    this.terminal.println('  Allowed: any characters except tildes; spaces become underscores.');
-    this.terminal.println('  Empty input keeps the current nick.');
-    this.terminal.println('');
-    this.terminal.setColor(Color.BRIGHT_YELLOW, Color.BLACK);
-    this.terminal.print(`  New nick (current: ${this._nick.replace(/_/g, ' ')}): `);
-    this.terminal.resetAttrs();
-
-    const raw = await this.terminal.readLine({ maxLen: 30, echo: true });
-    const cleaned = this._sanitiseNick(raw);
-
-    if (!cleaned) {
-      // Empty / whitespace-only — no change. Brief notice, then back.
-      this.terminal.setColor(Color.DARK_GRAY, Color.BLACK);
-      this.terminal.println('  (no change)');
-      this.terminal.resetAttrs();
-      // Small pause so they can read the notice before splash redraws
-      await this._sleep(700);
-      return;
-    }
-
-    // Apply and persist
-    this._nick        = cleaned;
-    this._displayNick = cleaned;
-    this._saveNick(cleaned);
-
-    this.terminal.setColor(Color.BRIGHT_GREEN, Color.BLACK);
-    this.terminal.println(`  Nick updated to: ${cleaned.replace(/_/g, ' ')}`);
-    this.terminal.resetAttrs();
-    await this._sleep(700);
-  }
-
-  _sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async _connectAndChat() {

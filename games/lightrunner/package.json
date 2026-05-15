@@ -1,0 +1,7 @@
+{
+  "name": "@synthdoor/game-lightrunner",
+  "version": "0.1.0-beta",
+  "description": "Lightrunner — Relativistic Isotope Courier for SynthDoor",
+  "main": "src/index.js",
+  "license": "MIT"
+}

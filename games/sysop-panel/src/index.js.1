@@ -19,26 +19,15 @@
 const path = require('path');
 const fs   = require('fs');
 
-// Helper: canonicalise a require path so server-internal singleton-bearing
-// modules (logger, roles) hit the same module-cache slot the server
-// populated at startup. See CLAUDE.md Rule 7 for the full rationale.
-// In short: `path.join` preserves the case Node gave us for __dirname,
-// while the server's own short-relative `require('./logger')` resolves
-// through Node's resolver which can produce a different case on Windows.
-// Two different case-spellings = two separate module records = two
-// separate private `_instance = null`s. Composing require.resolve with
-// fs.realpathSync forces a single canonical string regardless of caller.
-const _resolveServerModule = (p) => fs.realpathSync(require.resolve(p));
-
 const { GameBase, Screen, Draw, Color, CP437 } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'engine', 'src', 'index.js')
 );
-const { isSysop } = require(_resolveServerModule(
+const { isSysop } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'roles.js')
-));
-const { getLogger } = require(_resolveServerModule(
+);
+const { getLogger } = require(
   path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'logger.js')
-));
+);
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const W        = 80;
@@ -325,20 +314,12 @@ class SysopPanel extends GameBase {
       });
     }
 
-    this._status('Dashboard', '1-6=screens  R=refresh  Q=quit');
+    this._status('Dashboard', '1-6=screens  Q=quit');
   }
 
   async _keyDashboard(key) {
-    // The main loop redraws on every keypress, so R as a refresh trigger
-    // already "just works" — every other key would too. We accept R
-    // explicitly so the affordance shown in the status bar matches what
-    // operators expect, and so that future per-screen refresh hooks can
-    // attach here without breaking the contract.
-    const k = key.toLowerCase();
-    if (k === 'r') {
-      // Nothing to reset on the Dashboard — the redraw already pulls
-      // fresh uptime, registry counts, and DB tallies.
-    }
+    // R to refresh (redraw, picks up new session data)
+    // No-op — auto-refresh on any key
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -383,7 +364,7 @@ class SysopPanel extends GameBase {
     const absIdx   = this._whoOffset + this._whoSel;
     const selUser  = sessions[absIdx] ? sessions[absIdx].username : '';
     const scrollHint = total > pageSize ? ` (${absIdx + 1}/${total})` : '';
-    this._status(`${total} connection(s)${scrollHint}${selUser ? '  sel:' + selUser : ''}`, '^^/v=scroll  K=kick  R=refresh  Q=quit');
+    this._status(`${total} connection(s)${scrollHint}${selUser ? '  sel:' + selUser : ''}`, '^^/v=scroll  K=kick  Q=quit');
   }
 
   async _keyWho(key) {
@@ -415,16 +396,6 @@ class SysopPanel extends GameBase {
     if (key === 'PAGEDOWN') {
       this._whoOffset = Math.min(Math.max(0, total - pageSize), this._whoOffset + pageSize);
       this._whoSel = 0;
-    }
-
-    // R = refresh: reset scroll/selection state so newly-connected sessions
-    // (which appear at the bottom of the list) and freshly-evicted ghosts
-    // (which leave gaps) don't leave the highlighted row pointing at the
-    // wrong entry. The redraw itself already pulls a fresh snapshot from
-    // the registry — we just snap the cursor back to a known position.
-    if (k === 'r') {
-      this._whoOffset = 0;
-      this._whoSel    = 0;
     }
 
     if (k === 'k' && total > 0 && reg) {
@@ -621,16 +592,10 @@ class SysopPanel extends GameBase {
       });
     }
 
-    this._status('Statistics', '1-6=screens  R=refresh  Q=quit');
+    this._status('Statistics', '1-6=screens  Q=quit');
   }
 
-  async _keyStat(key) {
-    // Read-only screen — every keypress already triggers a redraw which
-    // re-queries the DB. R is accepted as the documented refresh key so
-    // the hint in the status bar matches behaviour.
-    const k = key.toLowerCase();
-    if (k === 'r') { /* no state to reset */ }
-  }
+  async _keyStat(key) { /* read-only */ }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // SCREEN 5 — LOG VIEWER
@@ -655,15 +620,7 @@ class SysopPanel extends GameBase {
 
     try {
       const raw   = fs.readFileSync(logPath, 'utf8');
-      // Reverse the line order so the newest entry sits at the top of the
-      // viewport. Operators using this screen want "what just happened?"
-      // by default; making them hunt to the bottom of a long file (or
-      // toggle Follow mode) was unnecessary friction.
-      //
-      // Note: this means scrolling DOWN walks back into history, while UP
-      // moves toward the present. The status bar reflects this by labeling
-      // offset 0 as "newest" rather than line 1.
-      const lines = raw.split('\n').filter(l => l.trim()).reverse();
+      const lines = raw.split('\n').filter(l => l.trim());
       return lines;
     } catch (_) {
       return [`[Log file not found: ${logPath}]`];
@@ -681,12 +638,9 @@ class SysopPanel extends GameBase {
 
     const pageSize = CONTENT_H - 2;
 
-    // Lines are stored newest-first. "Follow mode" therefore pins the
-    // viewport to offset 0 (the most recent entries) so newly-arrived
-    // log lines appear immediately at the top of the screen each time
-    // the panel re-reads the file.
+    // In follow mode, pin to the end
     if (this._logFollow) {
-      this._logOffset = 0;
+      this._logOffset = Math.max(0, lines.length - pageSize);
     }
 
     // Clamp offset
@@ -695,7 +649,7 @@ class SysopPanel extends GameBase {
     // Header row
     const searchInfo = this._logSearch ? ` [filter: "${this._logSearch}"]` : '';
     const followInfo = this._logFollow ? ' [FOLLOW]' : '';
-    s.putString(2, CONTENT_TOP, `Log Viewer (newest first)${searchInfo}${followInfo}`, C.HEAD_FG, C.HEAD_BG);
+    s.putString(2, CONTENT_TOP, `Log Viewer${searchInfo}${followInfo}`, C.HEAD_FG, C.HEAD_BG);
     Draw.hLine(s, 2, CONTENT_TOP + 1, W - 3, Draw.BOX_SINGLE, C.BORDER_FG, C.BORDER_BG);
 
     const visible = lines.slice(this._logOffset, this._logOffset + pageSize);
@@ -716,16 +670,12 @@ class SysopPanel extends GameBase {
     });
 
     const total = lines.length;
-    // Status line: with newest-first ordering, "offset 0" is the newest
-    // line, and increasing offset walks back into history. Render that
-    // explicitly so an operator scanning the screen knows where they are.
-    const newest = this._logOffset + 1;
-    const oldest = Math.min(this._logOffset + pageSize, total);
-    s.putString(2, CONTENT_BOTTOM, `Showing ${newest}-${oldest} of ${total} (newest first)`, C.DIM_FG, C.DIM_BG);
+    const pct   = total > 0 ? Math.round((this._logOffset + pageSize) / total * 100) : 100;
+    s.putString(2, CONTENT_BOTTOM, `Line ${this._logOffset + 1}-${Math.min(this._logOffset + pageSize, total)} of ${total} (${pct}%)`, C.DIM_FG, C.DIM_BG);
 
     this._status(
       this._logFollow ? 'Following log...' : 'Log viewer',
-      '^^/v=scroll  F=follow  /=search  R=refresh  Q=quit'
+      '^^/v=scroll  F=follow  /=search  Q=quit'
     );
   }
 
@@ -737,11 +687,6 @@ class SysopPanel extends GameBase {
     const pageSize = CONTENT_H - 2;
     const k        = key.toLowerCase();
 
-    // Reading order: lines are newest-first.
-    //   • UP    decreases offset → moves toward newer entries
-    //   • DOWN  increases offset → moves into older history
-    //   • HOME  jumps to newest (offset 0)
-    //   • END   jumps to oldest (lines.length - pageSize)
     if (key === 'UP'   || key === 'k') { this._logFollow = false; this._logOffset = Math.max(0, this._logOffset - 1); }
     if (key === 'DOWN' || key === 'j') { this._logFollow = false; this._logOffset = Math.min(Math.max(0, lines.length - pageSize), this._logOffset + 1); }
     if (key === 'PAGEUP')   { this._logFollow = false; this._logOffset = Math.max(0, this._logOffset - pageSize); }
@@ -749,14 +694,6 @@ class SysopPanel extends GameBase {
     if (key === 'HOME') { this._logFollow = false; this._logOffset = 0; }
     if (key === 'END')  { this._logFollow = false; this._logOffset = Math.max(0, lines.length - pageSize); }
     if (k === 'f')      { this._logFollow = !this._logFollow; }
-
-    // R = refresh: jump to newest and clear search/offset state. Useful
-    // when the operator has scrolled deep into history and wants to come
-    // back to the live tail in one keystroke.
-    if (k === 'r') {
-      this._logOffset = 0;
-      this._logFollow = true;
-    }
 
     if (k === '/') {
       const q = await this._prompt('Search: ');
@@ -814,7 +751,7 @@ class SysopPanel extends GameBase {
     const absIdx  = this._roleOffset + this._roleSel;
     const selUser = players[absIdx] ? players[absIdx].username : '';
     const scrollHint = total > pageSize ? ` (${absIdx + 1}/${total})` : '';
-    this._status(`${total} player(s)${scrollHint}${selUser ? '  sel:' + selUser : ''}`, '^^/v=scroll  P=promote  D=demote  R=refresh  Q=quit');
+    this._status(`${total} player(s)${scrollHint}${selUser ? '  sel:' + selUser : ''}`, '^^/v=scroll  P=promote  D=demote  Q=quit');
   }
 
   async _keyRoles(key) {
@@ -846,16 +783,6 @@ class SysopPanel extends GameBase {
     if (key === 'PAGEDOWN') {
       this._roleOffset = Math.min(Math.max(0, total - pageSize), this._roleOffset + pageSize);
       this._roleSel = 0;
-    }
-
-    // R = refresh: redraw is automatic on any key, but R additionally
-    // resets the scroll/selection back to the top so an operator who has
-    // just promoted/demoted a series of users can see the freshly-sorted
-    // table from the start. (Promotions move users up under the
-    // "ORDER BY role DESC" sort.)
-    if (k === 'r') {
-      this._roleOffset = 0;
-      this._roleSel    = 0;
     }
 
     if ((k === 'p' || k === 'd') && total > 0) {

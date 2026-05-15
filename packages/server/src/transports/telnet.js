@@ -51,14 +51,24 @@ class TelnetTransport {
     this._server  = null;
   }
 
-  listen(port) {
+  /**
+   * Start listening.
+   *
+   * @param {number} port
+   * @param {string} [host='0.0.0.0']  Interface to bind on. Defaults to all
+   *                                   interfaces. Pass '127.0.0.1' to restrict
+   *                                   to loopback (e.g. when fronted by a
+   *                                   reverse proxy on the same host), or any
+   *                                   specific local IP on a multi-homed box.
+   */
+  listen(port, host = '0.0.0.0') {
     this._server = net.createServer((socket) => {
       this._handleConnection(socket).catch(err => {
         getLogger().error('[Telnet] Unhandled error:', err.message);
         socket.destroy();
       });
     });
-    this._server.listen(port);
+    this._server.listen(port, host);
     return this;
   }
 
@@ -71,6 +81,16 @@ class TelnetTransport {
     socket.setKeepAlive(true, 30000);
 
     const remoteIP = socket.remoteAddress || 'unknown';
+
+    // Install a socket error handler immediately, before any await. Without
+    // this, an early peer RST (e.g. a port scanner that drops the socket
+    // mid-handshake) fires on the bare socket with no listener attached,
+    // and Node's default 'error' handler crashes the process. We just
+    // log-and-swallow; the rest of the handshake will short-circuit when
+    // socket.destroyed flips true.
+    socket.on('error', (err) => {
+      getLogger().info(`[Telnet] ${remoteIP} socket error: ${err.code || err.message}`);
+    });
 
     // Send IAC negotiation immediately, then give the client a moment to respond
     socket.write(NEGOTIATE);
@@ -92,6 +112,15 @@ class TelnetTransport {
       transport: 'telnet',
     });
 
+    // Registry liveness wiring: ping on every incoming chunk (telnet's
+    // raw socket gives us 'data' events directly), and report dead via
+    // socket.destroyed. The 30s sweep + the 5-minute activity gap means
+    // ghost rows never linger in Who's Online.
+    let _sessionId = null;
+    socket.on('data', () => {
+      if (_sessionId && this.registry) this.registry.ping(_sessionId);
+    });
+
     getLogger().info(`[Telnet] ${remoteIP} connected`);
 
     try {
@@ -106,6 +135,8 @@ class TelnetTransport {
         config:     this.config,
         registry:   this.registry,
         disconnect: () => socket.destroy(),
+        isLive:     () => !socket.destroyed,
+        bindSession: (id) => { _sessionId = id; },
       });
     } catch (err) {
       getLogger().error(`[Telnet] Session error for ${remoteIP}:`, err.stack || err.message);
