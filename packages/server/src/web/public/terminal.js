@@ -305,13 +305,25 @@ export class Terminal {
 
   // ── Character output ──────────────────────────────────────────
   putChar(byte) {
-    if (this._wrapPending&&this._autoWrap) { this.carriageReturn(); this.lineFeed(); this._wrapPending=false; }
     const cell=this.screen.get(this.cx,this.cy);
     if (this._insertMode) {
       for (let c=this.cols-1;c>this.cx;c--) this.screen.get(c,this.cy).copyFrom(this.screen.get(c-1,this.cy));
     }
     cell.set(byte,this.fgColor,this.bgColor,this.bold,this.blink);
-    if (this.cx>=this.cols-1) this._wrapPending=true; else this.cx++;
+    if (this.cx>=this.cols-1) {
+      // Eager wrap: advance to column 0 of the next line immediately.
+      // Respect DECAWM (auto-wrap mode) — when off, the cursor stays
+      // in place and further characters overwrite the last column.
+      if (this._autoWrap) {
+        this.cx=0;
+        if (this.cy===this._scrollBottom) this._doScrollUp();
+        else if (this.cy<this.rows-1) this.cy++;
+      }
+      // _wrapPending stays false; the eager model does not use it.
+      this._wrapPending=false;
+    } else {
+      this.cx++;
+    }
   }
   carriageReturn() { this.cx=0; this._wrapPending=false; }
   lineFeed() {
@@ -352,10 +364,38 @@ export class Terminal {
       for(let r=0;r<cy;r++) for(let c=0;c<cols;c++) this._clr(c,r);
       for(let c=0;c<=cx;c++) this._clr(c,cy);
     } else if (mode===3) {
-      // ESC[3J — erase saved lines (clear scrollback buffer).
-      // Sent by the server (screen.js) when entering FIXED mode.
-      this.clearScrollback();
+      // ESC[3J — xterm extension for "erase saved lines" (clear
+      // scrollback).  Intentionally a no-op here.  Scrollback in this
+      // client is a single-session continuous log: SCROLL-mode output
+      // scrolls into it naturally, FIXED-mode apps don't (they redraw
+      // in place), and on FIXED→SCROLL transition the post-FIXED final
+      // frame scrolls into the ring as the next SCROLL output pushes
+      // it off the top.  Honouring 3J would erase the SCROLL history
+      // every time the engine entered FIXED mode (screen.setMode emits
+      // ESC[2J ESC[3J as part of its enter sequence) — losing exactly
+      // the content the user most wants to scroll back to.  SyncTerm
+      // takes the same position against the same byte stream and the
+      // history survives there, so we match that behaviour.
     } else {
+      // mode 2 (full screen erase, the common case) and any unhandled
+      // mode value fall here.  For mode 2: snapshot every visible row
+      // into scrollback BEFORE clearing, so the content that was on
+      // display at the moment of the clear can still be reviewed.
+      // SyncTerm preserves this content; the natural-scroll-into-
+      // scrollback machinery alone doesn't (rows that hadn't scrolled
+      // off the top aren't anywhere except the live screen, and the
+      // clear would wipe them).  Snapshotting here closes that gap.
+      //
+      // BBS games drawing fixed-mode animation typically don't issue
+      // 2J between frames (they reposition with CUP and overwrite
+      // cells in place), so this doesn't flood scrollback with redraw
+      // frames in practice — the SynthDoor engine's setMode(FIXED)
+      // path emits 2J exactly once on entry, and external BBSes emit
+      // it at coarse-grained transitions.
+      if (mode===2) {
+        for(let r=0;r<rows;r++) this._scrollback.push(this.screen.snapshotRow(r));
+        while (this._scrollback.length>this.MAX_SCROLLBACK) this._scrollback.shift();
+      }
       for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) this._clr(c,r);
       if (mode===2) { this.cx=0; this.cy=0; }
     }

@@ -146,8 +146,22 @@ export class SBANSIDecoder {
         }
         // Otherwise CSI is complete.
         this._state = D_BIN;
+        return;
       }
-      // Anything else (out of spec): stay in CSI; ANSIParser will sort it out.
+      // Malformed CSI: a byte outside param/intermediate/terminator ranges
+      // (e.g. a C0 control like 0x08 BS, 0x0D CR — some legacy BBSes emit
+      // these as part of terminal auto-sensing probes like `ESC [ ! BS`).
+      //
+      // Mirror the encoder's _csi malformed branch: that branch flushes the
+      // partial CSI verbatim and then re-processes the malformed byte as
+      // content. The encoder will opcode-escape the byte if needed, so the
+      // wire byte we see here is the post-_content form already. We just
+      // need to exit CSI state — the byte was already pushed to `out` at
+      // the top of _passthrough, which is correct (it's the literal copy
+      // of what's on the wire). Subsequent bytes resume normal D_BIN
+      // decoding, which is what was broken before: this state used to
+      // stay in CSI forever, swallowing later SBANSI opcodes verbatim.
+      this._state = D_BIN;
       return;
     }
     if (this._passSub === 'MUSIC') {

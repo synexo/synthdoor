@@ -308,8 +308,16 @@ class WebSocketTransport {
     rawInput.on('error', err   => filtered.emit('error', err));
 
     // ── Send Telnet negotiation ──────────────────────────────────────────────
+    //
+    // The wire format is SBANSI-encoded ANSI/CP437. Telnet IAC bytes are
+    // part of that stream, so they must be encoded too — otherwise the
+    // browser's SBANSI decoder will misinterpret raw 0x01/0x03 (the option
+    // codes for ECHO/SGA) as MOVE_ABS / ERASE_EOL opcodes. Run the
+    // negotiation through the same encoder that wraps subsequent terminal
+    // output, then send the encoded bytes.
     try {
-      ws.send(WS_NEGOTIATE);
+      const encodedNegotiate = sbansi.encode(WS_NEGOTIATE);
+      if (encodedNegotiate.length > 0) ws.send(encodedNegotiate);
     } catch (_) {}
     await sleep(100);
 

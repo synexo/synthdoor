@@ -297,6 +297,20 @@ class BbsClient extends GameBase {
         this.terminal.resetAttrs();
       }
 
+      // Give the user ~2 seconds to read the connect / force-disconnect /
+      // debug-log lines, then clear the screen so the remote BBS's opening
+      // banner draws onto a clean canvas. Without this clear, BBSes that
+      // do not (or cannot) immediately send ESC[2J end up overlaying their
+      // banner on top of our local debug output, and BBSes that *do* send
+      // ESC[2J still leave the user briefly seeing the debug text before
+      // it's cleared. The outer `_connectToBBS` returns a Promise (not an
+      // async function), so this is implemented as a setTimeout rather
+      // than `await sleep(...)`. All socket creation and handler wiring
+      // moves inside the callback so the closure over `connected`,
+      // `isResolved`, `keyHandler`, `cleanup`, and `resolve` stays intact.
+      setTimeout(() => {
+        this.terminal.clearScreen();
+
       const socket = net.createConnection(port, host);
 
       const cleanup = () => {
@@ -381,6 +395,7 @@ class BbsClient extends GameBase {
       };
 
       this.terminal.on('key', keyHandler);
+      }, 2000);  // end of 2-second pause / clearScreen wrapper
     });
   }
 }

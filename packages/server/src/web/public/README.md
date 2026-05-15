@@ -20,6 +20,7 @@ All files are plain ES modules — no build step, no bundler, no npm.
 | `style.css` | All visual styling |
 | `app.js` | Application controller — wires everything together |
 | `terminal.js` | Terminal state, ANSI parser, Telnet filter, screen buffer |
+| `sbansi-decoder.js` | Decodes the server's SBANSI binary opcode stream back to ANSI/CP437 |
 | `renderer.js` | Canvas drawing engine |
 | `font.js` | IBM VGA ROM font bitmap data and sprite-sheet builder |
 | `connection.js` | WebSocket transport (binary frames) |
@@ -59,6 +60,10 @@ WebSocket frame (binary)
  WSConnection          ← unwraps ArrayBuffer into Uint8Array
       │
       ▼
+ SBANSIDecoder         ← reverses the server's SBANSI binary opcode
+      │                  encoding, restoring the original ANSI/CP437
+      │                  byte stream (including embedded Telnet IAC)
+      ▼
  TelnetFilter          ← strips IAC negotiation bytes; responds to DO/WILL
       │
       ▼
@@ -75,6 +80,16 @@ WebSocket frame (binary)
 ```
 
 User input flows in reverse: keyboard/touch events in `app.js` → `WSConnection.sendString()` → WebSocket frame to server.
+
+**Order matters: SBANSIDecoder must run before TelnetFilter.** The server-side
+encoder escapes its own opcode-range bytes (`0x00`–`0x06`, `0x0E`–`0x16`, `0x1B`)
+by prefixing them with `OP_LITERAL` (`0x00`), so an IAC sequence like
+`IAC WILL ECHO` (`0xFF 0xFB 0x01`) becomes `0xFF 0xFB 0x00 0x01` on the wire.
+A TelnetFilter that saw the wire bytes first would consume `0xFF 0xFB 0x00` as a
+complete `IAC WILL <opt=0>` command and swallow the `0x00` that was actually
+`OP_LITERAL`'s marker, desyncing the decoder. Decoding first restores the
+original byte stream, after which TelnetFilter sees a well-formed IAC sequence
+it can recognise.
 
 ---
 
@@ -129,7 +144,10 @@ All runtime options are read from `window.SYNTHDOOR_CONFIG` in `index.html`. Sup
 
 **Data pipeline wiring:**
 ```js
-conn.onData      = (bytes) => telnet.process(bytes)
+conn.onData      = (bytes) => {
+  const ansi = decoder.decode(bytes)
+  telnet.process(ansi)
+}
 telnet.onData    = (bytes) => { parser.feed(bytes); term.scanURLs(); dirty = true; }
 telnet.onSend    = (bytes) => conn.sendBytes(bytes)   // Telnet WONT/DONT responses
 term.onSend      = (str)   => conn.sendString(str)    // DSR cursor position reports
@@ -187,10 +205,16 @@ A flat `Cell[]` array of length `cols × rows`. Provides `get(col, row)`, `clear
 
 #### `class TelnetFilter`
 
-A five-state machine (`DATA`, `IAC`, `CMD`, `SB`, `SB_IAC`) that processes raw WebSocket bytes and strips Telnet IAC negotiation sequences before the ANSI parser sees them.
+A five-state machine (`DATA`, `IAC`, `CMD`, `SB`, `SB_IAC`) that processes the
+SBANSI-decoded byte stream and strips Telnet IAC negotiation sequences before
+the ANSI parser sees them.
 
 - Responds to `DO <opt>` with `WONT <opt>` and to `WILL <opt>` with `DONT <opt>`, politely declining all options.
 - Emits filtered data bytes via `onData` callback and Telnet responses via `onSend` callback.
+- Sits AFTER SBANSIDecoder in the pipeline: the decoder restores the original
+  ANSI/CP437 byte stream (which may include raw IAC sequences emitted by the
+  server or proxied through bbs-client) and TelnetFilter then sees a clean
+  byte stream where `0xFF` reliably introduces an IAC sequence.
 
 #### `class ANSIParser`
 
@@ -211,13 +235,63 @@ A four-state machine (`NORMAL`, `ESC`, `CSI`, `MUSIC`) that interprets ANSI/VT10
 
 Owns and mutates the `ScreenBuffer`. Implements all the operations called by `ANSIParser` plus scrollback management, URL scanning, and copy text extraction.
 
-**Cursor and wrap:** The `_wrapPending` flag implements the standard "deferred wrap" behaviour — reaching column 79 sets the flag rather than immediately advancing to column 0, row+1. The wrap happens on the *next* `putChar`, so writing exactly 80 characters to a line does not add a spurious blank line.
+**Cursor and wrap:** The terminal uses the **immediate (eager) wrap** convention
+common to DOS-era BBS clients: as soon as a printable character lands in
+column 79 (the last column), the cursor advances to column 0 of the next row
+immediately, scrolling if necessary. This matches the de-facto standard that
+classic BBS games rely on (writing full-width rows then using `ESC[A` to back
+up over the just-wrapped row works correctly). The `_wrapPending` flag is
+unused and kept at `false`; the deferred-wrap / "Last Column Flag" model used
+by xterm and other modern terminals is **not** what this client implements.
+See the project-root `CLAUDE.md` rule 6 for the rationale and the implications
+for game authors.
 
 **Scroll region:** `_scrollTop` and `_scrollBottom` (set by DECSTBM `ESC [ r`) constrain scrolling to a sub-region of the screen. `_doScrollUp` pushes the top line into the scrollback buffer only when `_scrollTop === 0` (the full viewport is scrolling), preventing partial-screen scroll regions from polluting the scrollback.
 
 **Scrollback:** `_scrollback` is a `Cell`-snapshot array (max `MAX_SCROLLBACK` rows). `_scrollOffset` tracks how many lines back from live the view is. `getDisplayCells()` returns either the live `screen.cells` array directly (when `_scrollOffset === 0`) or synthesises a flat array from the appropriate scrollback slice plus live rows, so the renderer always receives the same shape of data regardless of scroll state.
 
+The scrollback ring is populated by three mechanisms, each preserving history that would otherwise be lost:
+
+1. **Natural scroll-up** (`_doScrollUp`): when content scrolls past the top of the visible screen (rows pushed off the top by a `\n` at the bottom or a `\r\n`-driven scroll), the displaced row is snapshotted into scrollback. Only fires when `_scrollTop === 0` so partial-screen scroll regions don't pollute history.
+2. **Snapshot on `ESC[2J`** (full-screen clear, `eraseDisplay(2)`): every visible row is snapshotted into scrollback **before** the cells are cleared. Without this, a screen full of content the user is currently looking at would vanish silently the moment a clear arrived (which happens on every `setMode(FIXED)` transition and at many BBS menu / banner / game boundaries).
+3. **`ESC[3J` is a no-op** (`eraseDisplay(3)`): the xterm "erase saved lines" extension is intentionally ignored. Honouring it would wipe scrollback on every `setMode(FIXED)` transition (the engine's screen layer emits `ESC[3J` as part of its enter sequence), destroying exactly the history the user most wants to scroll back to. SyncTerm takes the same position; matching that gives consistent behaviour across the two clients.
+
+These three together mean scrollback accumulates a continuous chronological record across SCROLL-mode activity, FIXED-mode app transitions, and screen-clearing menus — including the final visible state of a FIXED-mode game (preserved when the post-game SCROLL output naturally scrolls the game's last frame off the top, line by line).
+
 **URL scanning (`scanURLs`):** Iterates every row of the live screen, converts bytes to Unicode via the `CP437` table, and runs a `/https?:\/\/[^\s\x00-\x1F\x7F]*/g` regex. Results are stored in `_urls` as `{row, col, len, url}` objects. Called after every data batch and used by `app.js` for hover cursor and click-to-open.
+
+---
+
+### `sbansi-decoder.js` — `class SBANSIDecoder`
+
+Reverses the server-side SBANSI binary opcode encoder, restoring the original
+ANSI/CP437 byte stream the engine emitted. SBANSI is a compact wire encoding
+for the most common ANSI sequences (cursor moves, erase, SGR, etc.) — a
+single-byte opcode stands in for a multi-byte CSI. Bytes outside the opcode
+range pass through unchanged; opcode-range bytes occurring as content are
+escaped with `OP_LITERAL` (`0x00`). See `packages/server/src/transports/sbansi-spec.js`
+for the full wire format.
+
+Two parser states plus a passthrough for verbatim ANSI sequences:
+
+- **`D_BIN`** — looking for opcodes. Most bytes pass through; specific values
+  trigger dispatch (e.g. `0x05` → emit `\x1B[2J`, `0x0E` → emit `\x1B[0m`).
+  `0x1B` enters passthrough.
+- **`D_AWAIT_*`** — multi-byte opcodes (MOVE_ABS, LITERAL, SGR variants) park
+  here for their argument bytes.
+- **`D_ANSI_PASSTHROUGH`** — copies a complete ANSI escape sequence verbatim
+  to the output. Sub-state tracks ESC vs. CSI vs. MUSIC (`ESC [ M`) so the
+  decoder knows when the sequence terminates and it can return to `D_BIN`.
+
+**Malformed-CSI handling matters.** Some BBSes emit partial CSI sequences as
+part of terminal-detection probes (e.g. `ESC [ ! <BS>` — the `<BS>` is a C0
+control byte that doesn't belong in a CSI body). The decoder's passthrough
+state, when it sees a body byte that's neither parameter nor intermediate nor
+terminator, exits passthrough and resumes `D_BIN` decoding. The byte itself
+has already been pushed to the output verbatim (matching the encoder's
+malformed-CSI behaviour). Without this, the decoder would stay stuck in CSI
+state until something in `0x40`–`0x7E` arrived, swallowing subsequent SBANSI
+opcodes as raw CSI-body bytes and corrupting the rendering downstream.
 
 ---
 

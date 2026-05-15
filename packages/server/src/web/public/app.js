@@ -4,11 +4,11 @@
  * Reads window.SYNTHDOOR_CONFIG (set in index.html) for all runtime options.
  */
 
-import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.min.js';
-import { Renderer, CHAR_W, CHAR_H }                  from './renderer.min.js';
-import { WSConnection }                               from './connection.min.js';
-import { ANSIMusic }                                  from './music.min.js';
-import { SBANSIDecoder }                              from './sbansi-decoder.min.js';
+import { Terminal, ANSIParser, TelnetFilter, CP437 } from './terminal.js';
+import { Renderer, CHAR_W, CHAR_H }                  from './renderer.js';
+import { WSConnection }                               from './connection.js';
+import { ANSIMusic }                                  from './music.js';
+import { SBANSIDecoder }                              from './sbansi-decoder.js';
 
 // ── Config with defaults ──────────────────────────────────────────────────
 const CFG = Object.assign({
@@ -57,11 +57,22 @@ export class App {
     this._renderer = new Renderer(this._canvas, this._cols, this._rows);
     this._telnet   = new TelnetFilter();
     this._parser   = new ANSIParser(this._term);
-    // SBANSI binary decoder for the WebSocket transport. The encoder
-    // (server-side) compresses the ANSI/CP437 byte stream into binary
-    // opcodes; the decoder reverses that transformation byte-for-byte
-    // and feeds the resulting ANSI bytes into the existing ANSIParser.
-    // See sbansi-spec.js.
+    // SBANSI binary decoder for the WebSocket transport. The server-side
+    // encoder transduces the engine's ANSI/CP437 byte stream into a
+    // tighter binary opcode form; the decoder reverses that transformation
+    // byte-for-byte. See sbansi-spec.js.
+    //
+    // Pipeline order: WS bytes → SBANSI decode → TelnetFilter → ANSI parser.
+    //
+    // SBANSI must decode BEFORE TelnetFilter sees the bytes. The encoder
+    // escapes its own opcode-range bytes (0x00–0x06, 0x0E–0x16, 0x1B) by
+    // prefixing them with OP_LITERAL (0x00), so a source byte sequence like
+    // IAC WILL ECHO (0xFF 0xFB 0x01) becomes 0xFF 0xFB 0x00 0x01 on the
+    // wire. If TelnetFilter ran first it would consume 0xFF 0xFB 0x00 as
+    // a complete IAC WILL <opt=0> command, swallowing the 0x00 that was
+    // actually OP_LITERAL's marker — desyncing the decoder. Decoding
+    // first restores the original byte stream, after which TelnetFilter
+    // can recognise IAC sequences correctly.
     this._decoder  = new SBANSIDecoder();
     this._conn     = new WSConnection({
       onData:   (b) => this._onData(b),
@@ -72,12 +83,9 @@ export class App {
     this._term.MAX_SCROLLBACK = CFG.SCROLLBACK;
 
     this._telnet.onData = (bytes) => {
-      // Decode the binary opcode stream back to ANSI bytes, then feed to
-      // the existing ANSIParser. The decoder is a pure byte-to-byte
-      // transducer; it adds no semantics that the parser doesn't already
-      // know about.
-      const ansi = this._decoder.decode(bytes);
-      this._parser.feed(ansi);
+      // Telnet IAC has been stripped by this stage. Feed the remaining
+      // ANSI/CP437 bytes straight to the parser.
+      this._parser.feed(bytes);
       this._term.scanURLs();
       this._dirty = true;
     };
@@ -155,7 +163,16 @@ export class App {
   }
 
   // ── Data ingestion ────────────────────────────────────────────
-  _onData(bytes) { this._telnet.process(bytes); }
+  //
+  // WebSocket bytes arrive as an SBANSI binary opcode stream. Decode
+  // them back to the original ANSI/CP437 byte stream (which may include
+  // raw Telnet IAC sequences emitted by the server or proxied through
+  // bbs-client) and hand the result to TelnetFilter, which strips IAC
+  // and forwards the remaining bytes to the parser via its onData hook.
+  _onData(bytes) {
+    const ansi = this._decoder.decode(bytes);
+    this._telnet.process(ansi);
+  }
 
   // ── Render + blink loop ───────────────────────────────────────
   _startLoops() {
