@@ -233,6 +233,8 @@ Synchronous SQLite (better-sqlite3). Game-specific data namespaced by `GAME_NAME
 | `db.setPlayerData(game, username, key, value)` | Save per-player KV data |
 | `db.getPlayerData(game, username, key, default?)` | Load per-player KV data |
 | `db.getAllPlayerData(game, username)` | Load all KV pairs for player |
+| `db.setGameState(game, key, value)` | Save per-game (not per-player) KV data; values that are objects are JSON-stringified |
+| `db.getGameState(game, key, default?)` | Load per-game KV data; JSON-parses on read where possible |
 | `db.sendMessage(from, to, subject, body)` | Send async message |
 | `db.getMessages(username, unreadOnly?)` | Get messages for player |
 | `db.addChat(username, message, game?)` | Add global chat line |
@@ -845,11 +847,12 @@ consequences than in FIXED mode.
 
 ### 6. In SCROLL mode, a write to column 80 auto-advances the cursor
 
-This is **standard BBS wrap behaviour** (SyncTerm / CTerm / DOS ANSI.SYS / NetRunner /
-mTelnet all do this; it is the de-facto BBS standard). The SynthDoor web client matches
-SyncTerm's default: as soon as a printable character lands in column 80, the cursor
-moves to column 1 of the next line. There is no "stuck cursor" state. The implication
-for game authors is subtle and bites in two places:
+This is **standard BBS-era wrap behaviour** — the de-facto convention shared by
+DOS-era terminals and the BBS clients descended from them. The SynthDoor web
+client matches that convention: as soon as a printable character lands in
+column 80, the cursor moves to column 1 of the next line. There is no "stuck
+cursor" state. The implication for game authors is subtle and bites in two
+places:
 
 **Pitfall 1 — `terminal.println(line-that-is-exactly-80-chars)` advances two rows.**
 
@@ -895,13 +898,80 @@ bottom-right cell — wrap semantics never apply. This rule is specifically for 
 mode and for any direct `terminal.writeRaw` / `terminal.print` / `terminal.println`
 output you produce yourself.
 
-**Why this is the way it is.** Classic BBS games (TradeWars 2002, LORD, Usurper,
-SMASHIM, …) draw multi-column layouts by writing full-width rows and using `ESC[A`
-to back up over the just-wrapped row, overlaying content onto the just-wrapped target
-row. That trick depends on the auto-wrap firing immediately. Switching to deferred
-wrap (the DEC VT100 / STD-070 "Last Column Flag" model that xterm/iTerm use) would
-break those games. SyncTerm's documentation is explicit: "Not configurable." We
-match that.
+**Why this is the way it is.** Classic BBS games drew multi-column layouts by
+writing full-width rows and using `ESC[A` to back up over the just-wrapped row,
+overlaying content onto the just-wrapped target row. That trick depends on the
+auto-wrap firing immediately. Switching to deferred wrap (the DEC VT100 /
+STD-070 "Last Column Flag" model that modern terminals like xterm use) would
+break those games. We match the immediate-wrap convention.
+
+### 7. Importing singleton-bearing server modules
+
+Games occasionally need shared services that live in `packages/server/src/`:
+
+- `logger.js` — `getLogger()` returns the shared server logger
+- `auth-flow.js` — `getAuth()` returns the shared SynthAuth instance (authenticated mode only)
+- `roles.js` — `isSysop(username, config, db, authMode)` and friends
+
+These modules use the **module-private singleton** pattern: a `let _instance = null`
+populated at server startup, then read by every caller. They must be required
+from the same on-disk file the server itself required, otherwise Node may load
+them into a second module-cache slot with a fresh `_instance = null` and any
+`getLogger()` call against that slot will throw "Logger not initialised".
+
+**The standard import pattern (sufficient for most cases):**
+
+```javascript
+const path = require('path');
+
+const { getLogger } = require(
+  path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'logger.js')
+);
+const { getAuth } = require(
+  path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'auth-flow.js')
+);
+const { isSysop } = require(
+  path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'roles.js')
+);
+```
+
+This is the same `path.join(__dirname, ...)` form Rule 2 mandates for engine
+imports, and on a normally-configured server it lands on the same module-cache
+entry the server's own `require('./logger')` produced at startup.
+
+**Optional belt-and-braces canonicalisation.** The two games shipping today that
+import server-internal modules (`sysop-panel`, `bbs-code-helper`) wrap each
+require path in a small helper:
+
+```javascript
+const fs = require('fs');
+const _resolveServerModule = (p) => fs.realpathSync(require.resolve(p));
+
+const { getLogger } = require(_resolveServerModule(
+  path.join(__dirname, '..', '..', '..', 'packages', 'server', 'src', 'logger.js')
+));
+```
+
+`require.resolve` runs Node's full path-resolution logic and `fs.realpathSync`
+canonicalises the result against the OS (notably, case on Windows). The
+composition produces a canonical string that's identical regardless of which
+directory the import originated from. This is defensive coding — it costs
+nothing and protects against unlikely Windows path-case mismatches that have
+not been observed in practice.
+
+**Hot-reload caveat.** If you edit a server-internal module while the server
+is running, do **not** rely on the sysop panel's "Reload" feature to pick up
+the change. Server-internal modules carry session state, and hot-reloading
+them is not guaranteed safe. Restart the server to apply changes under
+`packages/server/src/`. Files inside your game's own directory hot-reload
+normally.
+
+**If you see "Logger not initialised" mid-session.** `logger.js` carries
+a diagnostic that will print the throwing module record's identity and the
+full set of `logger.js` entries in `require.cache` with each one's instance
+state. The stderr message and the throw's `.message` together will identify
+whether multiple cache slots exist or the single slot somehow lost its
+`_instance`. Capture both and the cause will be diagnosable.
 
 ---
 ## Implemented screen.js enhancements
