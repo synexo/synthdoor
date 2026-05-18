@@ -150,7 +150,7 @@ function wordWrap(text, width) {
 // ─────────────────────────────────────────────────────────────────────────────
 class MrcChat extends GameBase {
   static get GAME_NAME()  { return 'mrc-chat'; }
-  static get GAME_TITLE() { return 'MRC Chat'; }
+  static get GAME_TITLE() { return 'Multi Relay Chat'; }
 
   async run() {
     this._host    = (this.config && this.config.host)     || DEFAULT_HOST;

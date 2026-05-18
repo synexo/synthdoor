@@ -160,7 +160,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ─────────────────────────────────────────────────────────────────────────────
 class Meteoroid extends GameBase {
   static get GAME_NAME()  { return 'meteoroid'; }
-  static get GAME_TITLE() { return 'METEOROID'; }
+  static get GAME_TITLE() { return 'Meteoroid'; }
 
   async run() {
     this.screen.setMode(Screen.FIXED);

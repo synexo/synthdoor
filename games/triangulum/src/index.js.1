@@ -119,8 +119,8 @@ const MAX_EXPLOSIONS = 8;
 // ─────────────────────────────────────────────────────────────────────────────
 const DIVE_SPEED_BASE  = 0.60;    // path-steps/tick
 const DIVE_SPEED_SCALE = 0.04;
-const DIVE_SPEED_MAX   = 1.50;
-const DIVE_PROB_BASE   = 0.008;   // per tick
+const DIVE_SPEED_MAX   = 1.25;
+const DIVE_PROB_BASE   = 0.006;   // per tick
 
 const BOSS_TRACTOR_CHANCE = 0.55;
 const TRACTOR_WIDTH       = 2.5;
@@ -128,13 +128,13 @@ const TRACTOR_DURATION    = 50;   // ticks
 const TRACTOR_STOP_Y      = 13;
 const TRACTOR_RISE_SPEED  = 0.15; // rows/tick
 
-const ENEMY_BULLET_SPEED = 0.70;
+const ENEMY_BULLET_SPEED = 0.60;
 const MAX_ENEMY_BULLETS  = 8;
-const ENEMY_FIRE_PROB    = 0.020; // per diving enemy per tick
+const ENEMY_FIRE_PROB    = 0.015; // per diving enemy per tick
 
-const ENTRY_SPEED        = 0.90;
-const ENTRY_BATCH_DELAY  = 5;     // ticks between pair launches
-const WAVE_DELAY         = 70;    // ticks between waves
+const ENTRY_SPEED        = 0.80;
+const ENTRY_BATCH_DELAY  = 6;     // ticks between pair launches
+const WAVE_DELAY         = 80;    // ticks between waves
 
 const CHALLENGE_TOTAL    = 40;
 const CHALLENGE_SPEED    = 0.70;
@@ -168,7 +168,7 @@ function bezier4(p0, p1, p2, p3, steps) {
 // ─────────────────────────────────────────────────────────────────────────────
 class Triangulum extends GameBase {
   static get GAME_NAME()  { return 'triangulum'; }
-  static get GAME_TITLE() { return 'Triangulum'; }
+  static get GAME_TITLE() { return 'TRIANGULUM'; }
 
   async run() {
     this.screen.setMode(Screen.FIXED);

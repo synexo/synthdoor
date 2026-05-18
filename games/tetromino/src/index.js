@@ -104,7 +104,7 @@ const SCORE_TABLE  = [0, 100, 300, 500, 800];
 
 class Tetromino extends GameBase {
   static get GAME_NAME()  { return 'tetromino'; }
-  static get GAME_TITLE() { return 'TETROMINO'; }
+  static get GAME_TITLE() { return 'Tetromino'; }
 
   async run() {
     // Optional music prompt
